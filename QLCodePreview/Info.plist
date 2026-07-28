@@ -1,0 +1,163 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>CFBundleDevelopmentRegion</key>
+	<string>$(DEVELOPMENT_LANGUAGE)</string>
+	<key>CFBundleDisplayName</key>
+	<string>QLCodePreview Extension</string>
+	<key>CFBundleExecutable</key>
+	<string>$(EXECUTABLE_NAME)</string>
+	<key>CFBundleIdentifier</key>
+	<string>$(PRODUCT_BUNDLE_IDENTIFIER)</string>
+	<key>CFBundleInfoDictionaryVersion</key>
+	<string>6.0</string>
+	<key>CFBundleName</key>
+	<string>$(PRODUCT_NAME)</string>
+	<key>CFBundlePackageType</key>
+	<string>XPC!</string>
+	<key>CFBundleShortVersionString</key>
+	<string>$(MARKETING_VERSION)</string>
+	<key>CFBundleVersion</key>
+	<string>$(CURRENT_PROJECT_VERSION)</string>
+	<key>NSExtension</key>
+	<dict>
+		<key>NSExtensionAttributes</key>
+		<dict>
+			<!--
+				Mark this as a *data-based* preview extension (required by
+				QLPreviewProvider). The system will ask us to produce an
+				QLPreviewReply instead of calling GeneratePreviewForURL.
+			-->
+			<key>QLIsDataBasedPreview</key>
+			<true/>
+			<!--
+				The content types we are willing to preview. A few dynamic 
+				("dyn.") UTIs are included for less-common extensions the OS 
+				otherwise treats as generic.
+			-->
+			<key>QLSupportedContentTypes</key>
+			<array>
+				<string>public.source-code</string>
+				<string>public.plain-text</string>
+				<string>public.text</string>
+				<string>public.ruby-script</string>
+				<string>public.yaml</string>
+				<string>public.toml</string>
+				<string>public.php-script</string>
+				<string>org.khronos.glsl.fragment-shader</string>
+				<string>com.microsoft.typescript</string>
+				<string>public.rss</string>
+				<string>public.ksh-script</string>
+				<string>public.tcsh-script</string>
+				<string>com.microsoft.ini</string>
+				<string>org.iso.sql</string>
+				<string>public.make-source</string>
+				<string>net.daringfireball.markdown</string>
+				<string>com.apple.log</string>
+				<string>com.netscape.javascript-source</string>
+				<string>com.microsoft.c-sharp</string>
+				<string>com.microsoft.f-sharp</string>
+				<string>public.css</string>
+				<string>com.apple.applescript.script</string>
+				<string>public.xml</string>
+				<string>com.apple.property-list</string>
+				<string>org.tug.tex</string>
+				<string>com.sun.java-class</string>
+				<string>com.sun.java-source</string>
+				<string>org.vim.vim-script</string>
+				<string>org.tug.lua</string>
+				<string>public.tex</string>
+				<string>public.shell-script</string>
+				<string>public.c-header</string>
+				<string>public.objective-c-source</string>
+				<string>public.c-source</string>
+				<string>public.c-plus-plus-source</string>
+				<string>public.c-plus-plus-header</string>
+				<string>public.objective-c-plus-plus-source</string>
+				<string>public.assembly-source</string>
+				<string>com.apple.rez-source</string>
+				<string>public.mig-source</string>
+				<string>public.swift-source</string>
+				<string>public.pascal-source</string>
+				<string>com.apple.symbol-export</string>
+				<string>public.csh-script</string>
+				<string>public.zsh-script</string>
+				<string>com.apple.terminal.shell-script</string>
+				<string>com.apple.terminal.session</string>
+				<string>com.apple.terminal.settings</string>
+				<string>public.python-script</string>
+				<string>com.apple.xcode.strings-text</string>
+				<string>public.perl-script</string>
+				<string>public.patch-file</string>
+				<string>public.bash-script</string>
+				<string>com.apple.xcode.bash-script</string>
+				<string>com.apple.xcode.csh-script</string>
+				<string>com.apple.xcode.ksh-script</string>
+				<string>com.apple.xcode.tcsh-script</string>
+				<string>com.apple.xcode.yacc-source</string>
+				<string>com.apple.xcode.zsh-script</string>
+				<string>public.json</string>
+				<string>com.apple.applescript.text</string>
+				<string>public.comma-separated-values-text</string>
+				<string>public.tab-separated-values-text</string>
+				<string>com.apple.applescript.property-list</string>
+				<string>com.konstruuktlabs.QLCodePreview.drupal-php</string>
+				<string>com.konstruuktlabs.QLCodePreview.yaml</string>
+				<string>com.konstruuktlabs.QLCodePreview.toml</string>
+				<string>com.konstruuktlabs.QLCodePreview.rust</string>
+				<string>com.konstruuktlabs.QLCodePreview.go</string>
+				<string>com.konstruuktlabs.QLCodePreview.zig</string>
+				<string>com.konstruuktlabs.QLCodePreview.nim</string>
+				<string>com.konstruuktlabs.QLCodePreview.kotlin</string>
+				<string>com.konstruuktlabs.QLCodePreview.scala</string>
+				<string>com.konstruuktlabs.QLCodePreview.groovy</string>
+				<string>com.konstruuktlabs.QLCodePreview.clojure</string>
+				<string>com.konstruuktlabs.QLCodePreview.dotnet</string>
+				<string>com.konstruuktlabs.QLCodePreview.js-modern</string>
+				<string>com.konstruuktlabs.QLCodePreview.typescript</string>
+				<string>com.konstruuktlabs.QLCodePreview.python-extra</string>
+				<string>com.konstruuktlabs.QLCodePreview.ruby-extra</string>
+				<string>com.konstruuktlabs.QLCodePreview.perl-module</string>
+				<string>com.konstruuktlabs.QLCodePreview.tcl</string>
+				<string>com.konstruuktlabs.QLCodePreview.fish</string>
+				<string>com.konstruuktlabs.QLCodePreview.powershell</string>
+				<string>com.konstruuktlabs.QLCodePreview.sql</string>
+				<string>com.konstruuktlabs.QLCodePreview.json-extra</string>
+				<string>com.konstruuktlabs.QLCodePreview.ini</string>
+				<string>com.konstruuktlabs.QLCodePreview.make</string>
+				<string>com.konstruuktlabs.QLCodePreview.cmake</string>
+				<string>com.konstruuktlabs.QLCodePreview.graphql</string>
+				<string>com.konstruuktlabs.QLCodePreview.terraform</string>
+				<string>com.konstruuktlabs.QLCodePreview.css-preprocessor</string>
+				<string>com.konstruuktlabs.QLCodePreview.markdown</string>
+				<string>com.konstruuktlabs.QLCodePreview.r-lang</string>
+				<string>com.konstruuktlabs.QLCodePreview.dart</string>
+				<string>com.konstruuktlabs.QLCodePreview.elixir</string>
+				<string>com.konstruuktlabs.QLCodePreview.erlang</string>
+				<string>com.konstruuktlabs.QLCodePreview.haskell</string>
+				<string>com.konstruuktlabs.QLCodePreview.julia</string>
+				<string>com.konstruuktlabs.QLCodePreview.crystal</string>
+				<string>com.konstruuktlabs.QLCodePreview.component-frameworks</string>
+				<string>com.konstruuktlabs.QLCodePreview.arduino</string>
+				<string>com.konstruuktlabs.QLCodePreview.xml-extra</string>
+				<string>com.konstruuktlabs.QLCodePreview.lua</string>
+				<string>com.konstruuktlabs.QLCodePreview.shell-dotfiles</string>
+				<string>com.konstruuktlabs.QLCodePreview.pascal-extra</string>
+				<string>com.konstruuktlabs.QLCodePreview.patch-extra</string>
+				<string>com.konstruuktlabs.QLCodePreview.tex</string>
+			</array>
+		</dict>
+		<key>NSExtensionPointIdentifier</key>
+		<string>com.apple.quicklook.preview</string>
+		<!--
+			Objective-C classes are not module-qualified, so use the bare
+			class name here (no `$(PRODUCT_MODULE_NAME).` prefix). A dotted
+			name would cause NSClassFromString() to return nil and Quick Look
+			would silently fall back to the thumbnail.
+		-->
+		<key>NSExtensionPrincipalClass</key>
+		<string>QLCodePreviewProvider</string>
+	</dict>
+</dict>
+</plist>

@@ -1,0 +1,43 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<!--
+		Quick Look preview extensions run sandboxed. This is the entitlement
+		that actually turns that on. Without it, the extension isn't a valid
+		sandboxed App Extension and PlugInKit silently declines to register
+		it (no error, it just never shows up in `pluginkit -m`).
+	-->
+	<key>com.apple.security.app-sandbox</key>
+	<true/>
+	<!--
+		Quick Look hands us a URL to an arbitrary file the user is looking
+		at in Finder — not one the user picked via an Open panel — so the
+		normal user-selected-file entitlement isn't enough. Grant read-only
+		access to the whole filesystem, matching how other local Quick Look
+		preview extensions (e.g. the sandboxed Insta360 QuickLook extension)
+		handle the same requirement.
+	-->
+	<key>com.apple.security.files.user-selected.read-only</key>
+	<true/>
+	<key>com.apple.security.temporary-exception.files.absolute-path.read-only</key>
+	<array>
+		<string>/</string>
+	</array>
+	<!--
+		Membership in the App Group that owns the shared preference suite
+		(kQLCCAppGroup). The extension reads the user's rendering preferences
+		from NSUserDefaults(suiteName: kQLCCAppGroup); this entitlement is
+		what lets the sandboxed extension resolve that suite to the shared
+		Group Container so it sees the values the host app's Preferences /
+		Custom File Types windows wrote. This replaces the earlier
+		temporary-exception.shared-preference.read-only entitlement we used
+		when the host wrote to its own bundle-ID defaults domain — a foreign
+		domain from the extension's point of view.
+	-->
+	<key>com.apple.security.application-groups</key>
+	<array>
+		<string>group.com.konstruuktlabs.QLCodePreview</string>
+	</array>
+</dict>
+</plist>
