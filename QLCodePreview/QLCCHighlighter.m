@@ -1968,7 +1968,7 @@ static char kKindOrderKey;
 
 /// Escape + quote a single CSS font-family name for safe embedding inside
 /// the HTML `<style>` block emitted by `wrapBody:`. The user's font value
-/// arrives raw from an editable combo box (`PreferencesWindowController`'s
+/// arrives raw from an editable combo box (`PreferencesViewController`'s
 /// `fontField`) and is interpolated into `font-family:%@;`, so without this:
 ///   - a `"` or `\` breaks out of the CSS string, and
 ///   - a `</style>` even breaks out into the HTML body (the `<style>`

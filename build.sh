@@ -187,8 +187,9 @@ echo "▶ Compiling host app…"
 # the extension's sources, compiled as plain (non-app-extension) objects.
 APP_SOURCES=(
     "$APP_SRC_DIR/main.m"
-    "$APP_SRC_DIR/FileTypesWindowController.m"
-    "$APP_SRC_DIR/PreferencesWindowController.m"
+    "$APP_SRC_DIR/QLCCFlippedView.m"
+    "$APP_SRC_DIR/FileTypesViewController.m"
+    "$APP_SRC_DIR/PreferencesViewController.m"
     "$EXT_SRC_DIR/QLCCHighlighter.m"
     "$EXT_SRC_DIR/QLCCConfiguration.m"
     "$EXT_SRC_DIR/QLCCTheme.m"

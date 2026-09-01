@@ -14,19 +14,23 @@
 //  been launched, or explicitly registered with `pluginkit -a`). This app
 //  exists purely to satisfy that requirement.
 //
-//  Launching it just shows a short explanation and lets the user quit; the
-//  actual preview rendering happens entirely inside the embedded extension.
+//  Launching it opens a single settings window with two tabs, "Preview
+//  Settings" and "Custom File Types" — the app is only ever launched for
+//  first-time setup or to tweak a setting, so everything lives in that one
+//  window. The actual preview rendering happens entirely inside the
+//  embedded extension.
 //
 
 @import Cocoa;
 
-#import "FileTypesWindowController.h"
-#import "PreferencesWindowController.h"
+#import "FileTypesViewController.h"
+#import "PreferencesViewController.h"
 
 @interface QLCCAppDelegate : NSObject <NSApplicationDelegate>
 @property(strong) NSWindow *window;
-@property(strong) QLCCFileTypesWindowController *fileTypesWindowController;
-@property(strong) QLCCPreferencesWindowController *preferencesWindowController;
+@property(strong) QLCCPreferencesViewController *preferencesViewController;
+@property(strong) QLCCFileTypesViewController *fileTypesViewController;
+@property(strong) NSTextField *statusLabel;
 @end
 
 @implementation QLCCAppDelegate
@@ -54,7 +58,7 @@
 
     [NSApp setActivationPolicy:NSApplicationActivationPolicyRegular];
 
-    NSRect frame = NSMakeRect(0, 0, 440, 220);
+    NSRect frame = NSMakeRect(0, 0, 520, 566);
     NSWindowStyleMask style = NSWindowStyleMaskTitled | NSWindowStyleMaskClosable;
     self.window = [[NSWindow alloc] initWithContentRect:frame
                                                styleMask:style
@@ -62,60 +66,63 @@
                                                    defer:NO];
     self.window.title = @"QLCodePreview";
     self.window.releasedWhenClosed = NO;
+    NSView *content = self.window.contentView;
 
-    NSTextField *label = [NSTextField wrappingLabelWithString:
-        @"QLCodePreview is installed.\n\n"
-        @"Its Quick Look preview extension runs in the background — you can "
-        @"quit this window now. Source files (code, config, markup, etc.) "
-        @"should get colourised previews in Finder and Quick Look (Space bar).\n\n"
-        @"If previews don't appear, open System Settings → General → "
-        @"Login Items & Extensions → Quick Look, and make sure "
-        @"“QLCodePreview Extension” is turned on."];
-    label.frame = NSMakeRect(20, 60, 400, 140);
-    label.font = [NSFont systemFontOfSize:13];
-    [self.window.contentView addSubview:label];
+    // One window, two panes. Tab content is sized from the tab view's actual
+    // content rect so the fixed-frame layouts land where they should.
+    NSTabView *tabView = [[NSTabView alloc] initWithFrame:NSMakeRect(20, 64, 480, 484)];
+    NSSize paneSize = tabView.contentRect.size;
+
+    self.preferencesViewController = [[QLCCPreferencesViewController alloc] initWithSize:paneSize];
+    NSTabViewItem *prefsItem = [[NSTabViewItem alloc] initWithIdentifier:@"previewSettings"];
+    prefsItem.label = @"Preview Settings";
+    prefsItem.view = self.preferencesViewController.view;
+    [tabView addTabViewItem:prefsItem];
+
+    self.fileTypesViewController = [[QLCCFileTypesViewController alloc] initWithSize:paneSize];
+    NSTabViewItem *fileTypesItem = [[NSTabViewItem alloc] initWithIdentifier:@"fileTypes"];
+    fileTypesItem.label = @"Custom File Types";
+    fileTypesItem.view = self.fileTypesViewController.view;
+    [tabView addTabViewItem:fileTypesItem];
+    [content addSubview:tabView];
+
+    // Shared bottom bar: status line + Save (both panes) + Quit.
+    self.statusLabel = [NSTextField labelWithString:@""];
+    self.statusLabel.font = [NSFont systemFontOfSize:11];
+    self.statusLabel.textColor = [NSColor secondaryLabelColor];
+    self.statusLabel.frame = NSMakeRect(20, 24, 300, 18);
+    [content addSubview:self.statusLabel];
 
     NSButton *quit = [NSButton buttonWithTitle:@"Quit"
                                          target:NSApp
                                          action:@selector(terminate:)];
-    quit.frame = NSMakeRect(340, 15, 80, 32);
-    quit.bezelStyle = NSBezelStyleRounded;
-    quit.keyEquivalent = @"\r";
-    [self.window.contentView addSubview:quit];
+    quit.frame = NSMakeRect(430, 15, 70, 32);
+    [content addSubview:quit];
 
-    NSButton *fileTypes = [NSButton buttonWithTitle:@"Custom File Types…"
-                                              target:self
-                                              action:@selector(showFileTypes:)];
-    fileTypes.frame = NSMakeRect(20, 15, 170, 32);
-    [self.window.contentView addSubview:fileTypes];
-
-    NSButton *preferences = [NSButton buttonWithTitle:@"Preferences…"
-                                                target:self
-                                                action:@selector(showPreferences:)];
-    preferences.frame = NSMakeRect(200, 15, 130, 32);
-    [self.window.contentView addSubview:preferences];
+    NSButton *save = [NSButton buttonWithTitle:@"Save"
+                                         target:self
+                                         action:@selector(saveClicked:)];
+    save.frame = NSMakeRect(338, 15, 80, 32);
+    save.bezelStyle = NSBezelStyleRounded;
+    save.keyEquivalent = @"\r";
+    [content addSubview:save];
 
     [self.window center];
     [self.window makeKeyAndOrderFront:nil];
     [NSApp activateIgnoringOtherApps:YES];
 }
 
-- (void)showFileTypes:(id)sender {
-    if (!self.fileTypesWindowController) {
-        self.fileTypesWindowController = [[QLCCFileTypesWindowController alloc] init];
-    }
-    [self.fileTypesWindowController showWindow:nil];
-    [self.fileTypesWindowController.window makeKeyAndOrderFront:nil];
-    [NSApp activateIgnoringOtherApps:YES];
-}
+- (void)saveClicked:(id)sender {
+    NSString *prefsStatus = [self.preferencesViewController save];
+    NSString *mapStatus = [self.fileTypesViewController save];
+    self.statusLabel.stringValue =
+        [NSString stringWithFormat:@"%@ · %@.", prefsStatus, mapStatus];
 
-- (void)showPreferences:(id)sender {
-    if (!self.preferencesWindowController) {
-        self.preferencesWindowController = [[QLCCPreferencesWindowController alloc] init];
-    }
-    [self.preferencesWindowController showWindow:nil];
-    [self.preferencesWindowController.window makeKeyAndOrderFront:nil];
-    [NSApp activateIgnoringOtherApps:YES];
+    // Nudge Quick Look to re-read preferences for previews opened after this.
+    NSTask *task = [[NSTask alloc] init];
+    task.executableURL = [NSURL fileURLWithPath:@"/usr/bin/qlmanage"];
+    task.arguments = @[ @"-r" ];
+    [task launchAndReturnError:nil];
 }
 
 - (BOOL)applicationShouldTerminateAfterLastWindowClosed:(NSApplication *)app {

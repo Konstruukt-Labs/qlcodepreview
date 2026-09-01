@@ -1,13 +1,14 @@
 //
-//  PreferencesWindowController.m
+//  PreferencesViewController.m
 //  QLCodePreview (host app)
 //
 
-#import "PreferencesWindowController.h"
+#import "PreferencesViewController.h"
 #import "QLCCConfiguration.h"
+#import "QLCCFlippedView.h"
 #import "QLCCTheme.h"
 
-@interface QLCCPreferencesWindowController () <NSTextFieldDelegate>
+@interface QLCCPreferencesViewController ()
 @property (nonatomic, strong) NSComboBox *fontField;
 @property (nonatomic, strong) NSTextField *fontSizeField;
 @property (nonatomic, strong) NSStepper *fontSizeStepper;
@@ -20,23 +21,15 @@
 @property (nonatomic, strong) NSTextField *tabWidthField;
 @property (nonatomic, strong) NSStepper *tabWidthStepper;
 @property (nonatomic, strong) NSTextField *maxFileSizeField;
-@property (nonatomic, strong) NSTextField *statusLabel;
 @end
 
-@implementation QLCCPreferencesWindowController
+@implementation QLCCPreferencesViewController
 
-- (instancetype)init {
-    NSRect frame = NSMakeRect(0, 0, 460, 454);
-    NSWindowStyleMask style = NSWindowStyleMaskTitled | NSWindowStyleMaskClosable;
-    NSWindow *window = [[NSWindow alloc] initWithContentRect:frame
-                                                    styleMask:style
-                                                      backing:NSBackingStoreBuffered
-                                                        defer:NO];
-    window.title = @"Preferences";
-    window.releasedWhenClosed = NO;
-
-    self = [super initWithWindow:window];
+- (instancetype)initWithSize:(NSSize)size {
+    self = [super initWithNibName:nil bundle:nil];
     if (self) {
+        self.view = [[QLCCFlippedView alloc]
+            initWithFrame:NSMakeRect(0, 0, size.width, size.height)];
         [self buildUI];
         [self loadFromPreferences];
     }
@@ -46,8 +39,9 @@
 #pragma mark - UI construction (fixed frames; window is not resizable)
 
 - (void)buildUI {
-    NSView *content = self.window.contentView;
-    CGFloat y = 406;
+    NSView *content = self.view;
+    CGFloat w = content.bounds.size.width;
+    CGFloat y = 14;
     const CGFloat rowHeight = 34;
     const CGFloat labelX = 20;
     const CGFloat labelW = 130;
@@ -58,9 +52,9 @@
         @"needed."];
     heading.font = [NSFont systemFontOfSize:12];
     heading.textColor = [NSColor secondaryLabelColor];
-    heading.frame = NSMakeRect(labelX, y, 420, 34);
+    heading.frame = NSMakeRect(labelX, y, w - 40, 32);
     [content addSubview:heading];
-    y -= 44;
+    y += 44;
 
     // Font
     NSTextField *fontLabel = [NSTextField labelWithString:@"Font:"];
@@ -73,7 +67,7 @@
     ]];
     self.fontField.completes = NO;
     [content addSubview:self.fontField];
-    y -= rowHeight;
+    y += rowHeight;
 
     // Font size
     NSTextField *sizeLabel = [NSTextField labelWithString:@"Font size:"];
@@ -89,7 +83,7 @@
     self.fontSizeStepper.target = self;
     self.fontSizeStepper.action = @selector(fontSizeStepperChanged:);
     [content addSubview:self.fontSizeStepper];
-    y -= rowHeight;
+    y += rowHeight;
 
     // Light theme
     NSTextField *lightLabel = [NSTextField labelWithString:@"Light theme:"];
@@ -98,7 +92,7 @@
     self.lightThemePopup = [[NSPopUpButton alloc] initWithFrame:NSMakeRect(controlX, y, 220, 24) pullsDown:NO];
     [self.lightThemePopup addItemsWithTitles:[QLCCTheme lightThemeNames]];
     [content addSubview:self.lightThemePopup];
-    y -= rowHeight;
+    y += rowHeight;
 
     // Dark theme
     NSTextField *darkLabel = [NSTextField labelWithString:@"Dark theme:"];
@@ -107,7 +101,7 @@
     self.darkThemePopup = [[NSPopUpButton alloc] initWithFrame:NSMakeRect(controlX, y, 220, 24) pullsDown:NO];
     [self.darkThemePopup addItemsWithTitles:[QLCCTheme darkThemeNames]];
     [content addSubview:self.darkThemePopup];
-    y -= rowHeight;
+    y += rowHeight;
 
     // Show line numbers
     self.lineNumbersCheckbox = [NSButton checkboxWithTitle:@"Show line numbers"
@@ -115,7 +109,7 @@
                                                       action:NULL];
     self.lineNumbersCheckbox.frame = NSMakeRect(controlX, y, 260, 20);
     [content addSubview:self.lineNumbersCheckbox];
-    y -= rowHeight;
+    y += rowHeight;
 
     // Gutter width (gap between line numbers and code)
     NSTextField *gutterLabel = [NSTextField wrappingLabelWithString:@"Line number gap (px):"];
@@ -131,7 +125,7 @@
     self.gutterWidthStepper.target = self;
     self.gutterWidthStepper.action = @selector(gutterWidthStepperChanged:);
     [content addSubview:self.gutterWidthStepper];
-    y -= rowHeight;
+    y += rowHeight;
 
     // Wrap long lines
     self.wrapCheckbox = [NSButton checkboxWithTitle:@"Wrap long lines"
@@ -139,7 +133,7 @@
                                                action:NULL];
     self.wrapCheckbox.frame = NSMakeRect(controlX, y, 260, 20);
     [content addSubview:self.wrapCheckbox];
-    y -= rowHeight;
+    y += rowHeight;
 
     // Tab width
     NSTextField *tabLabel = [NSTextField labelWithString:@"Tab width:"];
@@ -155,7 +149,7 @@
     self.tabWidthStepper.target = self;
     self.tabWidthStepper.action = @selector(tabWidthStepperChanged:);
     [content addSubview:self.tabWidthStepper];
-    y -= rowHeight;
+    y += rowHeight;
 
     // Max file size
     NSTextField *maxLabel = [NSTextField wrappingLabelWithString:@"Max file size (MB, 0 = no limit):"];
@@ -164,27 +158,17 @@
     self.maxFileSizeField = [[NSTextField alloc] initWithFrame:NSMakeRect(controlX, y, 70, 24)];
     self.maxFileSizeField.formatter = [self integerFormatterWithMin:0 max:4096];
     [content addSubview:self.maxFileSizeField];
-    y -= rowHeight;
+    y += rowHeight;
 
-    NSButton *closeButton = [NSButton buttonWithTitle:@"Close"
-                                                target:self.window
-                                                action:@selector(performClose:)];
-    closeButton.frame = NSMakeRect(270, 15, 80, 32);
-    [content addSubview:closeButton];
-
-    NSButton *saveButton = [NSButton buttonWithTitle:@"Save"
-                                               target:self
-                                               action:@selector(saveClicked:)];
-    saveButton.frame = NSMakeRect(360, 15, 80, 32);
-    saveButton.bezelStyle = NSBezelStyleRounded;
-    saveButton.keyEquivalent = @"\r";
-    [content addSubview:saveButton];
-
-    self.statusLabel = [NSTextField labelWithString:@""];
-    self.statusLabel.font = [NSFont systemFontOfSize:11];
-    self.statusLabel.textColor = [NSColor secondaryLabelColor];
-    self.statusLabel.frame = NSMakeRect(20, 22, 240, 18);
-    [content addSubview:self.statusLabel];
+    // First-run troubleshooting hint (this pane is the app's front door).
+    NSTextField *hint = [NSTextField wrappingLabelWithString:
+        @"If previews don’t appear at all, enable “QLCodePreview Extension” "
+        @"in System Settings → General → Login Items & Extensions → "
+        @"Quick Look."];
+    hint.font = [NSFont systemFontOfSize:11];
+    hint.textColor = [NSColor secondaryLabelColor];
+    hint.frame = NSMakeRect(labelX, y + 6, w - 40, 44);
+    [content addSubview:hint];
 }
 
 - (NSNumberFormatter *)integerFormatterWithMin:(NSInteger)min max:(NSInteger)max {
@@ -239,7 +223,7 @@
     self.maxFileSizeField.integerValue = (NSInteger)mb;
 }
 
-- (void)saveClicked:(id)sender {
+- (NSString *)save {
     NSString *font = [self.fontField.stringValue stringByTrimmingCharactersInSet:
                            [NSCharacterSet whitespaceAndNewlineCharacterSet]];
     if (font.length == 0) font = @"Menlo";
@@ -279,14 +263,7 @@
     [suite setObject:@(bytes) forKey:@"maxFileSize"];
 
     [suite synchronize];
-
-    // Nudge Quick Look to re-read preferences for previews opened after this.
-    NSTask *task = [[NSTask alloc] init];
-    task.executableURL = [NSURL fileURLWithPath:@"/usr/bin/qlmanage"];
-    task.arguments = @[ @"-r" ];
-    [task launchAndReturnError:nil];
-
-    self.statusLabel.stringValue = @"Saved.";
+    return @"Saved";
 }
 
 @end

@@ -33,9 +33,9 @@ code changes with `zsh build.sh`; re-run `install` to deploy.
 
 ## Configuration
 
-Launch the **QLCodePreview** app, it has two windows:
+Launch the **QLCodePreview** app — a single settings window with two tabs:
 
-- **Preferences**: font, font size, light/dark themes, line numbers (and
+- **Preview Settings**: font, font size, light/dark themes, line numbers (and
   gutter width), soft-wrap, tab width, max file size.
 - **Custom File Types**: map any file extension to one of the supported
   languages (e.g. `install → php`).
