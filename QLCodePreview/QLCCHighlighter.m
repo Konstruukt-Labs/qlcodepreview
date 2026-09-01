@@ -24,6 +24,12 @@ typedef NS_ENUM(NSInteger, QLCCTokenKind) {
     QLCCTokenNumber,
     QLCCTokenKeyword,
     QLCCTokenVariable,
+    /// Internal only: a generic identifier-ish run matched by the master
+    /// regex's candidate piece. Never escapes to the renderers — the
+    /// emitter re-classifies it as Keyword or Default first (see
+    /// emitKeywordCandidatesInText:…). Listed last so existing persisted
+    /// values are unaffected.
+    QLCCTokenCandidate,
 };
 
 /// Streaming token sink: every tokenizer hands the runs of text it finds,
@@ -73,13 +79,62 @@ static NSString *const kPatPythonTriple =
 // #available, #selector, …) the way kPatHashLineComment did.
 static NSString *const kPatSwiftRawString = @"#+\"[\\s\\S]*?\"#+";
 
+// A generic identifier run that *could* be a plain keyword: 93% of all
+// built-in keyword strings (1,722 of 1,845, verified) contain only
+// [A-Za-z0-9_] characters. Wrapped in the same boundary lookarounds the
+// keyword alternation always used, so a returned run always satisfied
+// them and one set lookup decides it; runs that fail the lookarounds
+// ("column" inside ".column-right" — "-" is inside the boundary class)
+// aren't matched at all and stay gap text, exactly as before. The
+// interior-safety argument still holds: a \w run can host no interior
+// keyword or \b-anchored match, since every interior neighbour is a \w
+// character. Keywords with other characters ("@interface", "defined?",
+// ".PHONY", CSS kebab names and at-rules — 121 strings across 7
+// languages) keep a small dedicated regex piece with the same guards.
+static NSString *const kPatKeywordCandidate =
+    @"(?<![A-Za-z0-9_-])[A-Za-z_][A-Za-z0-9_]*(?![A-Za-z0-9_-])";
+
+// Dash-extended variant for languages whose keyword lists contain kebab
+// names (CSS: 78 of them). The candidate claims the whole dash run and
+// the set lookup decides, which removes 78 alternation branches per
+// identifier position. Equivalence with the old guards: a kebab keyword
+// K matches old iff K's exact text appeared with boundary characters
+// around it — i.e. iff the maximal dash run equals K — and the
+// non-keyword run renders as one Default span where the old pieces
+// emitted "foo", "-", "bar" as adjacent Defaults (coalesced by the
+// renderers into the same bytes).
+static NSString *const kPatKeywordCandidateDash =
+    @"(?<![A-Za-z0-9_-])[A-Za-z_][A-Za-z0-9_-]*(?![A-Za-z0-9_-])";
+
+// The keyword boundary class used by the old per-keyword lookarounds and
+// by the emitter's override checks: a keyword match may not be immediately
+// preceded or followed by one of these characters. Deliberately includes
+// '-' (kebab-case names join with it) and excludes '@', '?', '!', '.'.
+static inline BOOL QLCCIsIdentBoundaryChar(unichar c) {
+    return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') ||
+           (c >= '0' && c <= '9') || c == '_' || c == '-';
+}
+
 // Numeric literals (hex / binary / float / exponent, optional type suffix).
 static NSString *const kPatNumber =
     @"\\b(?:0[xX][0-9a-fA-F'_]+|0[bB][01'_]+|(?:\\d[\\d'_]*\\.?\\d*|\\.\\d+)"
     @"(?:[eE][+-]?\\d+)?)[fFlLuUdD]*\\b";
 
 // C preprocessor line: a line whose first non-whitespace char is '#'.
-static NSString *const kPatCPreproc = @"^[ \\t]*#[^\\n]*";
+// Preprocessor lines (C-family). Intentionally just "#" as a pattern:
+// the full legacy form ^[ \t]*#[^\n]* put every space and tab into the
+// master regex's lead-character union, so ICU stopped (and tried every
+// alternative) at each of the ~1.5M indentation characters of a 2 MB
+// file — measured +93 ms alone, +268 ms via amplification of the
+// trailing keyword pieces. Matching only "#" keeps the lead class tiny;
+// the emitter (emitMasterRegexTokensForSource:…) decides per match:
+// a '#' preceded solely by [ \t] back to the line start claims the
+// whole line exactly as the old pattern did (backward over the
+// indentation, forward to the line end); any other '#' rejects — only
+// the '#' itself is emitted, as Default — and the master continues
+// after it, re-scanning the rest of the line exactly as it did when the
+// old pattern failed to match at all.
+static NSString *const kPatCPreproc = @"#";
 
 // Variable references inside an interpolating double-quoted string (e.g.
 // PHP): "{$expr}" braces, or a bare "$var", optionally chained with
@@ -1289,20 +1344,129 @@ static dispatch_once_t gLanguageConfigsOnce;
     // for a config that sets "interpolates" without its own pattern.
     NSString *interpPattern = cfg[@"interpPattern"] ?: kPatInterpVar;
 
+    // Keyword-classification data attached to the regex by
+    // cachedRegexForConfig: (nil/empty for keyword-free languages — those
+    // have no candidate piece either, so the branches below never fire).
+    __block NSSet<NSString *> *keywordSet = objc_getAssociatedObject(regex, &kKeywordSetKey);
+    NSArray<NSNumber *> *overridable = objc_getAssociatedObject(regex, &kOverridableKey);
+
     [regex enumerateMatchesInString:source
                             options:0
                               range:wholeRange
                          usingBlock:^(NSTextCheckingResult *m,
                                       NSMatchingFlags flags, BOOL *stop) {
-        if (m.range.location > cursor) {
+        // A match starting before the cursor fell inside a preproc
+        // line claimed by an earlier '#' (see the kPatCPreproc branch
+        // below) — the line was already emitted whole, so drop it.
+        if (m.range.location < cursor) return;
+
+        NSUInteger piece = 0;
+        QLCCTokenKind kind = [QLCCHighlighter kindOfMatch:m inRegex:regex pieceIndex:&piece];
+        NSString *matchedText = [source substringWithRange:m.range];
+
+        // The preproc '#' piece claims from the start of its line —
+        // possibly BEFORE the match itself (over the indentation). The
+        // gap below must stop there, so decide the claim start up front.
+        NSUInteger claimStart = m.range.location;
+        BOOL preprocHashAtLineStart = NO;
+        if (kind == QLCCTokenPreproc && matchedText.length > 0 &&
+            [matchedText characterAtIndex:0] == '#') {
+            NSUInteger back = m.range.location;
+            while (back > 0) {
+                unichar p = [source characterAtIndex:back - 1];
+                if (p == ' ' || p == '\t') back--;
+                else break;
+            }
+            preprocHashAtLineStart =
+                back == 0 || [source characterAtIndex:back - 1] == '\n';
+            // Only a confirmed line start extends the claim backward —
+            // a mid-line '#' must leave the gap (including the spaces
+            // walked over above) untouched.
+            if (preprocHashAtLineStart) claimStart = back;
+        }
+
+        if (claimStart > cursor) {
             emit([source substringWithRange:
-                      NSMakeRange(cursor, m.range.location - cursor)],
+                      NSMakeRange(cursor, claimStart - cursor)],
                  QLCCTokenDefault);
         }
-        QLCCTokenKind kind = [QLCCHighlighter kindOfMatch:m inRegex:regex];
-        NSString *matchedText = [source substringWithRange:m.range];
-        if (interpolates && kind == QLCCTokenString && matchedText.length > 0 &&
-            [matchedText characterAtIndex:0] == interpDelimiter) {
+        if (kind == QLCCTokenCandidate) {
+            // Generic identifier run: one hash lookup decides it.
+            [self emitKeywordCandidatesInText:matchedText
+                                   keywordSet:keywordSet
+                                         emit:emit];
+        } else if (preprocHashAtLineStart) {
+            // kPatCPreproc decided in code, not regex (see its note):
+            // claim from the line start over the indentation forward to
+            // the '\n' — byte-for-byte the claim range of the old
+            // ^[ \t]*#[^\n]* piece. Matches inside the claimed line are
+            // dropped by the guard at the top of this block; the shared
+            // cursor tail below is skipped because the claim extends
+            // past the match itself.
+            NSUInteger lineEnd = NSMaxRange(m.range);
+            while (lineEnd < source.length &&
+                   [source characterAtIndex:lineEnd] != '\n') {
+                lineEnd++;
+            }
+            emit([source substringWithRange:
+                      NSMakeRange(claimStart, lineEnd - claimStart)],
+                 QLCCTokenPreproc);
+            cursor = lineEnd;
+            return;
+        } else if (kind == QLCCTokenPreproc && matchedText.length > 0 &&
+                   [matchedText characterAtIndex:0] == '#' && !preprocHashAtLineStart) {
+            // Mid-line '#': the old pattern didn't match here either —
+            // emit just the '#' as plain text and let the master
+            // re-scan the rest of the line exactly as before.
+            emit(matchedText, QLCCTokenDefault);
+        } else if (kind == QLCCTokenPreproc && [overridable[piece] boolValue]) {
+            // A call/type-piece match that the old keyword alternation
+            // would have claimed first: if its leading identifier run is
+            // a plain keyword AND the old keyword lookarounds hold for
+            // that run (the character before it and after it outside
+            // [A-Za-z0-9_-]), the keyword wins and any non-\w tail of the
+            // match (e.g. a Ruby "?") stays Default — byte-for-byte what
+            // the old precedence produced. Examples: "if (" stays a
+            // keyword, not a call; "Foo-bar" ("-" inside the boundary
+            // class) stays a type name, not keyword "Foo".
+            const NSUInteger mLen = matchedText.length;
+            NSUInteger rLen = 0; // leading \w run of the match
+            while (rLen < mLen) {
+                unichar c = [matchedText characterAtIndex:rLen];
+                if ((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') ||
+                    (c >= '0' && c <= '9') || c == '_') {
+                    rLen++;
+                } else {
+                    break;
+                }
+            }
+            BOOL overridden = NO;
+            if (rLen > 0) {
+                const NSUInteger rStart = m.range.location;
+                const NSUInteger rEnd = rStart + rLen;
+                // The character after the run decides the old lookahead:
+                // inside the match (a non-\w tail char) or after it.
+                unichar after = 0;
+                BOOL haveAfter = NO;
+                if (rEnd < source.length) {
+                    after = [source characterAtIndex:rEnd];
+                    haveAfter = YES;
+                }
+                if ((rStart == 0 || !QLCCIsIdentBoundaryChar([source characterAtIndex:rStart - 1])) &&
+                    (!haveAfter || !QLCCIsIdentBoundaryChar(after))) {
+                    NSString *ident = [source substringWithRange:NSMakeRange(rStart, rLen)];
+                    if ([keywordSet containsObject:ident]) {
+                        emit(ident, QLCCTokenKeyword);
+                        if (rLen < mLen) {
+                            emit([matchedText substringFromIndex:rLen], QLCCTokenDefault);
+                        }
+                        overridden = YES;
+                    }
+                }
+            }
+            if (!overridden) emit(matchedText, kind);
+        } else if (interpolates && kind == QLCCTokenString && matchedText.length > 0 &&
+                   [matchedText characterAtIndex:0] == interpDelimiter) {
             [self emitInterpolatedTokensForString:matchedText
                                           pattern:interpPattern
                                              emit:emit];
@@ -1532,6 +1696,63 @@ static dispatch_once_t gLanguageConfigsOnce;
 /// Falls back to a single String segment covering the whole text if
 /// nothing matches (the common case — most strings don't interpolate
 /// anything) or if the regex failed to compile.
+/// Classify an identifier run (matched by the master regex's candidate
+/// piece, kPatKeywordCandidate) against the language's plain-keyword set:
+/// a whole-run hit is a Keyword, anything else is Default text.
+///
+/// Equivalence with the retired plain-keyword alternation
+/// `(?<![A-Za-z0-9_-])kw(?![A-Za-z0-9_-])` (sorted longest-first) is by
+/// construction:
+/// • The candidate piece carries the same lookarounds, so a returned
+///   run always satisfied them, and no longer keyword can start at a
+///   run start (a longer match would have to extend the \w run).
+/// • Interior positions can never host a keyword: the preceding
+///   character is a \w character, inside the boundary class the old
+///   lookbehind rejects.
+///
+/// Dash runs (CSS kebab languages, kPatKeywordCandidateDash) have one
+/// slow path: a set-missed run like "border-radius-2" could still host
+/// NUMBER matches in the old master — a digit segment after a '-' is a
+/// \b boundary, and every keyword guard rejected at '-'. Re-emitting the
+/// run with the number piece alone (gaps as Default) reproduces those
+/// claims exactly: substring \b checks agree with the source because a
+/// maximal dash run can only be followed by a non-boundary character.
+- (void)emitKeywordCandidatesInText:(NSString *)run
+                          keywordSet:(NSSet<NSString *> *)keywordSet
+                                emit:(QLCCEmitBlock)emit {
+    if ([keywordSet containsObject:run]) {
+        emit(run, QLCCTokenKeyword);
+        return;
+    }
+    if ([run rangeOfString:@"-"].location == NSNotFound) {
+        emit(run, QLCCTokenDefault);
+        return;
+    }
+    static NSRegularExpression *numberRegex;
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{
+        numberRegex = [NSRegularExpression regularExpressionWithPattern:kPatNumber
+                                                                  options:0 error:nil];
+    });
+    __block NSUInteger cursor = 0;
+    [numberRegex enumerateMatchesInString:run
+                                   options:0
+                                     range:NSMakeRange(0, run.length)
+                                usingBlock:^(NSTextCheckingResult *m,
+                                             NSMatchingFlags flags, BOOL *stop) {
+        if (m.range.location > cursor) {
+            emit([run substringWithRange:
+                      NSMakeRange(cursor, m.range.location - cursor)],
+                 QLCCTokenDefault);
+        }
+        emit([run substringWithRange:m.range], QLCCTokenNumber);
+        cursor = NSMaxRange(m.range);
+    }];
+    if (cursor < run.length) {
+        emit([run substringFromIndex:cursor], QLCCTokenDefault);
+    }
+}
+
 - (void)emitInterpolatedTokensForString:(NSString *)text
                                  pattern:(NSString *)pattern
                                     emit:(QLCCEmitBlock)emit {
@@ -1563,6 +1784,29 @@ static dispatch_once_t gLanguageConfigsOnce;
     }
 }
 
+/// Build the alternation piece for keywords containing characters outside
+/// [A-Za-z0-9_] ("@interface", "defined?", ".PHONY", CSS kebab names):
+/// longest-first, escaped, wrapped in the boundary lookarounds the full
+/// keyword list always used. "-" is deliberately in the boundary class so
+/// kebab value keywords don't match inside ".column-right"-style names,
+/// and the lookarounds — not \b — are what make "@media"-style keywords
+/// matchable at all.
++ (NSString *)looseKeywordPatternForWords:(NSArray<NSString *> *)words {
+    NSArray<NSString *> *sorted =
+        [words sortedArrayUsingComparator:^NSComparisonResult(NSString *a, NSString *b) {
+            if (a.length != b.length) {
+                return a.length > b.length ? NSOrderedAscending : NSOrderedDescending;
+            }
+            return NSOrderedSame;
+        }];
+    NSMutableArray<NSString *> *escaped = [NSMutableArray arrayWithCapacity:sorted.count];
+    for (NSString *kw in sorted) {
+        [escaped addObject:[NSRegularExpression escapedPatternForString:kw]];
+    }
+    return [NSString stringWithFormat:@"(?<![A-Za-z0-9_-])(%@)(?![A-Za-z0-9_-])",
+                          [escaped componentsJoinedByString:@"|"]];
+}
+
 /// Class-level cache of compiled master and interpolation regexes. The
 /// patterns depend only on the static per-language configs (built once by
 /// +languageConfig:), never on theme or user settings, so one cache can
@@ -1590,144 +1834,226 @@ static dispatch_once_t gLanguageConfigsOnce;
 
     NSMutableArray<NSString *> *pieces = [NSMutableArray array];
     NSMutableArray<NSNumber *> *kinds = [NSMutableArray array];
+    NSMutableArray<NSNumber *> *overridable = [NSMutableArray array];
+#define QLCCAddPiece(patternText, tokenKind, kwOverridable)                       \
+    do {                                                                          \
+        [pieces addObject:(patternText)];                                         \
+        [kinds addObject:@(tokenKind)];                                           \
+        [overridable addObject:@((kwOverridable) ? YES : NO)];                    \
+    } while (0)
 
-    // 1. Comments (highest precedence — keywords inside comments must not
-    //    be coloured).
+    // Piece order is a PERFORMANCE lever, not just precedence: ICU stops
+    // scanning at the union of all pieces' lead characters, then tries the
+    // alternatives in listed order. Identifier positions (the majority of
+    // stops) therefore pay for every piece listed before the candidate
+    // piece, which is the one that finally claims them. Measured on a
+    // 2 MB objc file: the same piece set costs 88 ms when the candidate
+    // leads and ~470 ms when it trails 30 branch attempts. The order
+    // below keeps every precedence rule that matters:
+    //   • comment/string/number/preproc pieces lead with characters that
+    //     can never start an identifier run ('/', '"', digits, '#', '$'),
+    //     so their position relative to the candidate is output-neutral —
+    //     they move behind it.
+    //   • key/boolean/value patterns and the letter-leading loose keywords
+    //     (CSS kebab names, Ruby "defined?") lead with identifier
+    //     characters, so they keep their original precedence ahead of the
+    //     old keyword piece — and ahead of the candidate that replaced it.
+    //   • numbers must precede values (a YAML value's negated character
+    //     class would otherwise swallow "42abc" whole).
+    //   • the call/type piece must precede the candidate (with the
+    //     emitter's keyword override compensating, as before).
+
+    // Variables (e.g. PHP's $foo). The '$' sigil never starts any other
+    // piece, and value patterns that could contain '$' belong to
+    // languages without variable patterns — so this earliest position
+    // (its original one) is output-neutral but free.
+    NSString *variablePattern = cfg[@"variablePattern"];
+    if (variablePattern.length > 0) {
+        QLCCAddPiece(([NSString stringWithFormat:@"(%@)", variablePattern]),
+                     QLCCTokenVariable, NO);
+    }
+
+    // Key names in "key: value" / "key = value" style formats (YAML,
+    // TOML, INI). These languages have no reserved words, so without
+    // this the key and its unquoted, non-numeric value render as
+    // identical plain text. Reuses the keyword colour slot to visually
+    // separate keys from values, matching how most editors do.
+    NSString *keyPattern = cfg[@"keyPattern"];
+    if (keyPattern.length > 0) {
+        QLCCAddPiece(([NSString stringWithFormat:@"(%@)", keyPattern]),
+                     QLCCTokenKeyword, NO);
+    }
+
+    // Boolean / null literals (YAML, TOML, INI) — before numbers/values
+    // so "true" and "42" keep distinct colours. Reuses the preproc
+    // colour slot, which these languages otherwise never use.
+    NSString *booleanPattern = cfg[@"booleanPattern"];
+    if (booleanPattern.length > 0) {
+        QLCCAddPiece(([NSString stringWithFormat:@"(%@)", booleanPattern]),
+                     QLCCTokenPreproc, NO);
+    }
+
+    // Numbers — before values (see the ordering notes above).
+    QLCCAddPiece(([NSString stringWithFormat:@"(%@)", kPatNumber]),
+                 QLCCTokenNumber, NO);
+
+    // Generic unquoted values (YAML, INI) — bare words that aren't a
+    // number or boolean/null. Coloured with the *string* slot so quoted
+    // and unquoted values read as the same colour.
+    NSString *valuePattern = cfg[@"valuePattern"];
+    if (valuePattern.length > 0) {
+        QLCCAddPiece(([NSString stringWithFormat:@"(%@)", valuePattern]),
+                     QLCCTokenString, NO);
+    }
+
+    // Keywords. Plain keywords (composed only of [A-Za-z0-9_] — 93% of
+    // every built-in list, verified) are NOT emitted as regex
+    // alternatives any more (that cost ~430 ms of a 481 ms render on a
+    // 2 MB objc file via the branch-per-alternative-per-stop effect
+    // described above). Instead the generic identifier piece below
+    // matches whole word runs and the emitter classifies each run with a
+    // hash-set lookup — provably equivalent (see
+    // emitKeywordCandidatesInText:…). Keywords containing other
+    // characters ("@interface", "defined?", ".PHONY", CSS kebab names and
+    // at-rules) keep a small dedicated alternation piece with the
+    // original guards: letter-leading ones here (they must win over the
+    // candidate's shorter \w run, like the keyword piece they replace),
+    // loose-leading ones after the candidate (their lead characters
+    // never start a candidate run, so the order is output-neutral).
+    NSArray<NSString *> *keywords = cfg[@"keywords"];
+    NSMutableSet<NSString *> *plainKeywords = [NSMutableSet set];
+    NSMutableArray<NSString *> *looseLeadingWord = [NSMutableArray array];
+    NSMutableArray<NSString *> *looseOther = [NSMutableArray array];
+    BOOL hasKebabKeywords = NO;
+    for (NSString *kw in keywords) {
+        BOOL plain = YES;
+        for (NSUInteger i = 0; i < kw.length; i++) {
+            unichar c = [kw characterAtIndex:i];
+            if (!((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') ||
+                  (c >= '0' && c <= '9') || c == '_')) {
+                plain = NO;
+                break;
+            }
+        }
+        if (plain) {
+            [plainKeywords addObject:kw];
+        } else {
+            unichar c0 = [kw characterAtIndex:0];
+            BOOL startsPlain =
+                (c0 >= 'a' && c0 <= 'z') || (c0 >= 'A' && c0 <= 'Z') ||
+                (c0 >= '0' && c0 <= '9') || c0 == '_';
+            if (!startsPlain) {
+                // "@interface"/".PHONY" — loose lead, never starts a
+                // candidate run; sits behind the candidate piece.
+                [looseOther addObject:kw];
+            } else if ([kw rangeOfString:@"-"].location != NSNotFound) {
+                // Kebab name (CSS "border-radius"): handled by the
+                // dash-extended candidate + set lookup below.
+                [plainKeywords addObject:kw];
+                hasKebabKeywords = YES;
+            } else {
+                // Letter-leading but contains other loose characters
+                // (Ruby "defined?") — must win over the candidate's
+                // shorter run, like the keyword piece it replaces.
+                [looseLeadingWord addObject:kw];
+            }
+        }
+    }
+    if (looseLeadingWord.count > 0) {
+        QLCCAddPiece([QLCCHighlighter looseKeywordPatternForWords:looseLeadingWord],
+                     QLCCTokenKeyword, NO);
+    }
+
+    // Extra keyword-coloured PATTERN for open-ended families no fixed
+    // list could cover, e.g. CSS's "-webkit-*"/"-moz-*" vendor prefixes.
+    // Same identifier-boundary guard as the keyword pieces.
+    NSString *extraKeywordPattern = cfg[@"extraKeywordPattern"];
+    if (extraKeywordPattern.length > 0) {
+        QLCCAddPiece(([NSString stringWithFormat:@"(?<![A-Za-z0-9_-])(%@)(?![A-Za-z0-9_-])",
+                                 extraKeywordPattern]),
+                     QLCCTokenKeyword, NO);
+    }
+
+    // Function-call and PascalCase type/class names (e.g. PHP). Runs
+    // before the candidate piece, so an identifier shaped like a call
+    // keeps its colour; the emitter then overrides a call/type match
+    // back to Keyword when its leading identifier run is a keyword ("if ("
+    // stays keyword-blue, exactly as when the keyword alternation sat in
+    // front of this piece). Reuses the preproc colour slot (unused by
+    // languages that opt into this) rather than adding another role.
+    NSString *typeOrCallPattern = cfg[@"typeOrCallPattern"];
+    if (typeOrCallPattern.length > 0) {
+        QLCCAddPiece(([NSString stringWithFormat:@"(%@)", typeOrCallPattern]),
+                     QLCCTokenPreproc, YES);
+    }
+
+    // The candidate piece: generic identifier runs. Everything with an
+    // identifier lead character has claimed its text by now, exactly as
+    // it did ahead of the old keyword alternation; the emitter turns each
+    // run into a Keyword or Default with one set lookup. Only added when
+    // the language has plain keywords; keyword-free languages (json,
+    // toml, yaml, …) and loose-only languages (make) keep theirs off.
+    if (plainKeywords.count > 0) {
+        QLCCAddPiece(([NSString stringWithFormat:@"(%@)",
+                                 hasKebabKeywords ? kPatKeywordCandidateDash
+                                                  : kPatKeywordCandidate]),
+                     QLCCTokenCandidate, NO);
+    }
+
+    // Comments (highest colouring precedence for the text they cover —
+    // their lead characters can't start any other piece, so trailing the
+    // candidate here is output-neutral).
     NSMutableArray<NSString *> *commentParts = [NSMutableArray array];
     for (NSString *p in cfg[@"blockComments"]) [commentParts addObject:p];
     for (NSString *p in cfg[@"lineComments"]) [commentParts addObject:p];
     if (commentParts.count > 0) {
-        [pieces addObject:[NSString stringWithFormat:@"(%@)",
-                           [commentParts componentsJoinedByString:@"|"]]];
-        [kinds addObject:@(QLCCTokenComment)];
+        QLCCAddPiece(([NSString stringWithFormat:@"(%@)",
+                                 [commentParts componentsJoinedByString:@"|"]]),
+                     QLCCTokenComment, NO);
     }
 
-    // 2. Strings.
+    // Strings.
     NSArray<NSString *> *stringParts = cfg[@"strings"];
     if (stringParts.count > 0) {
-        [pieces addObject:[NSString stringWithFormat:@"(%@)",
-                           [stringParts componentsJoinedByString:@"|"]]];
-        [kinds addObject:@(QLCCTokenString)];
+        QLCCAddPiece(([NSString stringWithFormat:@"(%@)",
+                                 [stringParts componentsJoinedByString:@"|"]]),
+                     QLCCTokenString, NO);
     }
 
-    // 2b. Variables (e.g. PHP's $foo). Distinct from the strings/numbers/
-    //     keywords already handled — these languages have no ambiguity
-    //     with the '$' sigil, so this is safe to add unconditionally
-    //     wherever a language config opts in.
-    NSString *variablePattern = cfg[@"variablePattern"];
-    if (variablePattern.length > 0) {
-        [pieces addObject:[NSString stringWithFormat:@"(%@)", variablePattern]];
-        [kinds addObject:@(QLCCTokenVariable)];
-    }
-
-    // 3. Key names in "key: value" / "key = value" style formats (YAML,
-    //    TOML, INI). These languages have no reserved words, so without
-    //    this the key and its unquoted, non-numeric value render as
-    //    identical plain text — only quoted strings and numbers stood out.
-    //    Reuses the keyword colour slot to visually separate keys from
-    //    values, matching how most editors distinguish the two.
-    NSString *keyPattern = cfg[@"keyPattern"];
-    if (keyPattern.length > 0) {
-        [pieces addObject:[NSString stringWithFormat:@"(%@)", keyPattern]];
-        [kinds addObject:@(QLCCTokenKeyword)];
-    }
-
-    // 4. Boolean / null literals (YAML, TOML, INI). Listed before the
-    //    generic number/value pieces below so e.g. "true" and "42" keep
-    //    their own distinct colour instead of being absorbed into the
-    //    generic unquoted-value colour. Reuses the preproc colour slot,
-    //    which these languages otherwise never use.
-    NSString *booleanPattern = cfg[@"booleanPattern"];
-    if (booleanPattern.length > 0) {
-        [pieces addObject:[NSString stringWithFormat:@"(%@)", booleanPattern]];
-        [kinds addObject:@(QLCCTokenPreproc)];
-    }
-
-    // 5. Preprocessor lines (C-family).
+    // Preprocessor lines (C-family) — see kPatCPreproc: the piece only
+    // matches '#', the emitter performs the line-start extension that
+    // reproduces the old ^[ \t]*#[^\n]* claim ranges.
     if ([cfg[@"preproc"] boolValue]) {
-        [pieces addObject:[NSString stringWithFormat:@"(%@)", kPatCPreproc]];
-        [kinds addObject:@(QLCCTokenPreproc)];
+        QLCCAddPiece(([NSString stringWithFormat:@"(%@)", kPatCPreproc]),
+                     QLCCTokenPreproc, NO);
     }
 
-    // 6. Numbers.
-    [pieces addObject:[NSString stringWithFormat:@"(%@)", kPatNumber]];
-    [kinds addObject:@(QLCCTokenNumber)];
-
-    // 7. Generic unquoted values (YAML, INI) — bare words that aren't a
-    //    number or boolean/null (those already claimed above). Coloured
-    //    with the *string* slot so quoted and unquoted values read as the
-    //    same colour, only comments/keys/numbers/booleans stand apart.
-    NSString *valuePattern = cfg[@"valuePattern"];
-    if (valuePattern.length > 0) {
-        [pieces addObject:[NSString stringWithFormat:@"(%@)", valuePattern]];
-        [kinds addObject:@(QLCCTokenString)];
+    // Loose keywords that lead with their loose character ("@interface",
+    // ".PHONY") — after the candidate, which never claims their starts.
+    if (looseOther.count > 0) {
+        QLCCAddPiece([QLCCHighlighter looseKeywordPatternForWords:looseOther],
+                     QLCCTokenKeyword, NO);
     }
 
-    // 8. Keywords.
-    NSArray<NSString *> *keywords = cfg[@"keywords"];
-    if (keywords.count > 0) {
-        // Longest-first: a plain "\b...\b"-style alternation tries
-        // alternatives in listed order and stops at the first match, so a
-        // short keyword that's a literal prefix of a longer one (e.g. CSS's
-        // "border" vs "border-radius" — "-" is a non-word char, so "\b"
-        // fires right between them) would otherwise win and leave the rest
-        // of the longer keyword uncoloured. Sorting longest-first makes the
-        // more specific keyword win instead.
-        NSArray<NSString *> *sortedKeywords =
-            [keywords sortedArrayUsingComparator:^NSComparisonResult(NSString *a, NSString *b) {
-                if (a.length != b.length) {
-                    return a.length > b.length ? NSOrderedAscending : NSOrderedDescending;
-                }
-                return NSOrderedSame;
-            }];
-        NSMutableArray<NSString *> *escaped = [NSMutableArray arrayWithCapacity:sortedKeywords.count];
-        for (NSString *kw in sortedKeywords) {
-            [escaped addObject:[NSRegularExpression escapedPatternForString:kw]];
-        }
-        // "\b" only fires at a transition between a word char and a
-        // non-word char — so a keyword that itself STARTS or ENDS with a
-        // non-word character (CSS's "@media", "-webkit-foo"; Ruby/Crystal's
-        // "defined?", "is_a?") can never satisfy a "\b" placed right next to
-        // that character, since both sides of the boundary are non-word.
-        // "(?<![A-Za-z0-9_-])"/"(?![A-Za-z0-9_-])" assert what we actually
-        // mean — "not immediately adjacent to an identifier character" —
-        // and behave identically to "\b" for ordinary alphanumeric
-        // keywords, so this is a pure bugfix, not a behaviour change, for
-        // every keyword that doesn't start/end with "@"/"-"/"?"/etc.
-        // "-" is deliberately included alongside [A-Za-z0-9_]: CSS
-        // (and any kebab-case identifier) uses "-" as a name-joining
-        // character, so without this a value keyword like "right"/"center"
-        // would wrongly match inside a class name like ".column-right" or
-        // ".right-column" — "-" is a non-word character, so plain "\b"
-        // (and the character class without the "-") would treat that as a
-        // legitimate boundary even though it very clearly isn't one here.
-        [pieces addObject:[NSString stringWithFormat:@"(?<![A-Za-z0-9_-])(%@)(?![A-Za-z0-9_-])",
-                           [escaped componentsJoinedByString:@"|"]]];
-        [kinds addObject:@(QLCCTokenKeyword)];
-    }
-
-    // 8b. Extra keyword-coloured PATTERN (as opposed to a literal-string
-    //     list) for open-ended families no fixed list could cover, e.g.
-    //     CSS's "-webkit-*"/"-moz-*"/... vendor-prefixed properties. Same
-    //     identifier-boundary guard as the keywords piece above.
-    NSString *extraKeywordPattern = cfg[@"extraKeywordPattern"];
-    if (extraKeywordPattern.length > 0) {
-        [pieces addObject:[NSString stringWithFormat:@"(?<![A-Za-z0-9_-])(%@)(?![A-Za-z0-9_-])",
-                           extraKeywordPattern]];
-        [kinds addObject:@(QLCCTokenKeyword)];
-    }
-
-    // 9. Function-call and PascalCase type/class names (e.g. PHP). Must be
-    //    listed AFTER keywords above — otherwise a reserved word used with
-    //    parens, like "if (", would be claimed here instead of coloured as
-    //    a keyword. Reuses the preproc colour slot (unused by languages
-    //    that opt into this) rather than adding yet another theme role.
-    NSString *typeOrCallPattern = cfg[@"typeOrCallPattern"];
-    if (typeOrCallPattern.length > 0) {
-        [pieces addObject:[NSString stringWithFormat:@"(%@)", typeOrCallPattern]];
-        [kinds addObject:@(QLCCTokenPreproc)];
-    }
-
+    // 8. Keywords. Plain keywords (composed only of [A-Za-z0-9_] — 93%
+    //    of every built-in list, verified) are NOT emitted as regex
+    //    alternatives any more: ICU stops at the union of all pieces'
+    //    lead characters and then tries alternatives in order, so an
+    //    identifier position paid ~30 branch attempts per keyword
+    //    alternative before the candidate piece finally matched — measured
+    //    434 ms of a 481 ms render on a 2 MB objc file. Instead a cheap
+    //    generic identifier piece (piece 7 below) matches whole word runs
+    //    and the emitter classifies each run with a hash-set lookup —
+    //    provably equivalent (see emitKeywordCandidatesInText:…).
+    //    Keywords containing other characters ("@interface", "defined?",
+    //    ".PHONY", CSS kebab names and at-rules) keep a dedicated
+    //    alternation piece with the original guards, in front of the
+    //    candidate when they start with a letter (CSS "border-radius",
+    //    Ruby "defined?" — they must win over the candidate's shorter
+    //    \w run) and behind it otherwise ("@interface", ".PHONY" — their
+    //    lead characters never start a candidate run, so the order is
+    //    irrelevant to output but keeps '@'/'.' positions from paying the
+    //    keyword-alternation cost).
     if (pieces.count == 0) {
         return nil; // nothing to highlight (e.g. plain text)
     }
@@ -1765,12 +2091,22 @@ static dispatch_once_t gLanguageConfigsOnce;
     // parallel cache keyed identically.
     objc_setAssociatedObject(regex, &kKindOrderKey, [kinds copy],
                              OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    objc_setAssociatedObject(regex, &kOverridableKey, [overridable copy],
+                             OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+
+    // Keyword set for the candidate classifier (whole-run lookups — no
+    // interior matches are possible in a \w run, see the equivalence note
+    // on emitKeywordCandidatesInText:…).
+    objc_setAssociatedObject(regex, &kKeywordSetKey, [plainKeywords copy],
+                             OBJC_ASSOCIATION_RETAIN_NONATOMIC);
 
     [[QLCCHighlighter sharedRegexCache] setObject:regex forKey:cacheKey];
     return regex;
 }
 
 static char kKindOrderKey;
+static char kOverridableKey;
+static char kKeywordSetKey;
 
 /// Map the group that matched in `regex` back to its `QLCCTokenKind`.
 ///
@@ -1787,14 +2123,17 @@ static char kKindOrderKey;
 /// alive until tokenisation finishes, even if the cache drops its own entry.
 /// A post-eviction re-lookup simply rebuilds and re-attaches.
 + (QLCCTokenKind)kindOfMatch:(NSTextCheckingResult *)m
-                   inRegex:(NSRegularExpression *)regex {
+                   inRegex:(NSRegularExpression *)regex
+                 pieceIndex:(nullable NSUInteger *)outPiece {
     NSArray<NSNumber *> *kinds = objc_getAssociatedObject(regex, &kKindOrderKey);
     for (NSUInteger i = 0; i < kinds.count; i++) {
         NSRange r = [m rangeAtIndex:(i + 1)]; // groups are 1-based
         if (r.location != NSNotFound && r.length > 0) {
+            if (outPiece) *outPiece = i;
             return (QLCCTokenKind)[kinds[i] integerValue];
         }
     }
+    if (outPiece) *outPiece = 0;
     return QLCCTokenDefault;
 }
 
@@ -1809,6 +2148,7 @@ static char kKindOrderKey;
         case QLCCTokenNumber:  return self.theme.numberColor;
         case QLCCTokenKeyword: return self.theme.keywordColor;
         case QLCCTokenVariable: return self.theme.variableColor;
+        case QLCCTokenCandidate: return nil; // classified before render
         case QLCCTokenDefault: return nil;
     }
     return nil;
@@ -1824,6 +2164,7 @@ static char kKindOrderKey;
         case QLCCTokenNumber:  return @"n";
         case QLCCTokenKeyword: return @"k";
         case QLCCTokenVariable: return @"v";
+        case QLCCTokenCandidate: return nil; // classified before render
         case QLCCTokenDefault: return nil;
     }
     return nil;
