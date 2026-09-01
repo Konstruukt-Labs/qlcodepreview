@@ -1823,17 +1823,65 @@ static char kKindOrderKey;
 }
 
 /// HTML-escape a string for safe inclusion inside a <pre>/<span>.
+///
+/// Bulk scan-and-copy: strings containing none of `&`, `<`, `>` are
+/// returned as-is (no copy — most tokens qualify), and the rest are
+/// escaped by appending whole runs between the three specials with
+/// CFStringAppendCharacters, expanding only the specials themselves.
+/// (A previous per-character appendFormat:"%C" version parsed a format
+/// string once per character of the file and measured ~30% of total
+/// preview time on a 2 MB source.)
 + (NSString *)htmlEscape:(NSString *)s {
-    if (s.length == 0) return @"";
-    NSMutableString *out = [NSMutableString stringWithCapacity:s.length];
-    for (NSUInteger i = 0; i < s.length; i++) {
-        unichar c = [s characterAtIndex:i];
-        switch (c) {
-            case '&': [out appendString:@"&amp;"]; break;
-            case '<': [out appendString:@"&lt;"]; break;
-            case '>': [out appendString:@"&gt;"]; break;
-            default:  [out appendFormat:@"%C", c]; break;
+    const NSUInteger len = s.length;
+    if (len == 0) return @"";
+
+    enum { kChunk = 1024 };
+    unichar buf[kChunk];
+
+    // Fast path: locate the first escapable character, if any.
+    NSUInteger first = NSNotFound;
+    for (NSUInteger off = 0; off < len && first == NSNotFound; off += kChunk) {
+        const NSUInteger n = MIN(kChunk, len - off);
+        CFStringGetCharacters((CFStringRef)s,
+                              CFRangeMake((CFIndex)off, (CFIndex)n), buf);
+        for (NSUInteger i = 0; i < n; i++) {
+            const unichar c = buf[i];
+            if (c == '&' || c == '<' || c == '>') {
+                first = off + i;
+                break;
+            }
         }
+    }
+    if (first == NSNotFound) return s;  // immutable; nothing to escape
+
+    NSMutableString *out =
+        [NSMutableString stringWithCapacity:len + (len >> 3) + 8];
+    if (first > 0) [out appendString:[s substringToIndex:first]];
+
+    for (NSUInteger idx = first; idx < len; ) {
+        const NSUInteger n = MIN(kChunk, len - idx);
+        CFStringGetCharacters((CFStringRef)s,
+                              CFRangeMake((CFIndex)idx, (CFIndex)n), buf);
+        NSUInteger run = 0;
+        for (NSUInteger i = 0; i < n; i++) {
+            const unichar c = buf[i];
+            if (c != '&' && c != '<' && c != '>') continue;
+            if (i > run) {
+                CFStringAppendCharacters((CFMutableStringRef)out,
+                                         buf + run, (CFIndex)(i - run));
+            }
+            switch (c) {
+                case '&': [out appendString:@"&amp;"]; break;
+                case '<': [out appendString:@"&lt;"];  break;
+                case '>': [out appendString:@"&gt;"];  break;
+            }
+            run = i + 1;
+        }
+        if (n > run) {
+            CFStringAppendCharacters((CFMutableStringRef)out,
+                                     buf + run, (CFIndex)(n - run));
+        }
+        idx += n;
     }
     return out;
 }
