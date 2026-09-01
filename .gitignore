@@ -2,3 +2,6 @@
 
 # Ignore the build directory
 build/
+
+# graphify knowledge graph (disposable, rebuildable)
+graphify-out/

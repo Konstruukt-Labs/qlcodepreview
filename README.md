@@ -169,3 +169,10 @@ interactivity available to previews.
 - **Check registration:** `pluginkit -mAvvv | grep -i qlcodepreview` the line
   should start with `+` (enabled).
 - **Reset Quick Look:** `qlmanage -r`.
+
+## Development
+
+This repo keeps a local [graphify](https://pypi.org/project/graphifyy/) knowledge
+graph in `graphify-out/` (gitignored, disposable). A post-commit hook rebuilds
+it after every commit; query it with `graphify query "…"`, or rebuild manually
+with `graphify extract . --code-only` if stale.
