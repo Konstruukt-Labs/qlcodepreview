@@ -103,8 +103,13 @@ static NSString *const kPatKeywordCandidate =
 // non-keyword run renders as one Default span where the old pieces
 // emitted "foo", "-", "bar" as adjacent Defaults (coalesced by the
 // renderers into the same bytes).
+// The optional leading '-': the candidate also claims vendor-prefixed
+// runs ("-webkit-transform", …), which the emitter classifies via
+// QLCCIsVendorPrefixedRun. After the optional '-' the run must still
+// begin [A-Za-z_], so "-4px" and "--var" never claim here (the
+// numbers/variables pieces decide them first, exactly as before).
 static NSString *const kPatKeywordCandidateDash =
-    @"(?<![A-Za-z0-9_-])[A-Za-z_][A-Za-z0-9_-]*(?![A-Za-z0-9_-])";
+    @"(?<![A-Za-z0-9_-])-?[A-Za-z_][A-Za-z0-9_-]*(?![A-Za-z0-9_-])";
 
 // The keyword boundary class used by the old per-keyword lookarounds and
 // by the emitter's override checks: a keyword match may not be immediately
@@ -113,6 +118,35 @@ static NSString *const kPatKeywordCandidateDash =
 static inline BOOL QLCCIsIdentBoundaryChar(unichar c) {
     return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') ||
            (c >= '0' && c <= '9') || c == '_' || c == '-';
+}
+
+/// Vendor-prefixed CSS property/value run? Shape: '-' + one of the
+/// fixed engine prefixes + '-' + a tail of at least one further
+/// [A-Za-z-] character, with nothing but [A-Za-z-] up to the run's
+/// boundary-guarded end (digits/underscores disqualify —
+/// "-webkit-transform-2" is not a property, and the tail can never be
+/// shorter than the maximal run). The caller
+/// (emitKeywordCandidatesInText:…) has already established the outer
+/// boundary guards (the candidate's lookarounds) and the
+/// ':'-predecessor case for pseudo-elements. Called only for set-missed
+/// runs that begin with '-', a rare path.
+static BOOL QLCCIsVendorPrefixedRun(NSString *run) {
+    NSString *prefix = nil;
+    if ([run hasPrefix:@"-webkit-"]) prefix = @"-webkit-";
+    else if ([run hasPrefix:@"-moz-"]) prefix = @"-moz-";
+    else if ([run hasPrefix:@"-ms-"]) prefix = @"-ms-";
+    else if ([run hasPrefix:@"-o-"]) prefix = @"-o-";
+    else if ([run hasPrefix:@"-khtml-"]) prefix = @"-khtml-";
+    else return NO;
+    NSUInteger i = prefix.length;
+    const NSUInteger n = run.length;
+    if (i >= n) return NO; // tail needs at least one [A-Za-z-] char
+    for (; i < n; i++) {
+        unichar c = [run characterAtIndex:i];
+        if (!((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || c == '-'))
+            return NO;
+    }
+    return YES;
 }
 
 // Numeric literals (hex / binary / float / exponent, optional type suffix).
@@ -1078,18 +1112,15 @@ static dispatch_once_t gLanguageConfigsOnce;
                     @"unset", @"uppercase", @"visible",
                 ],
                 // Vendor-prefixed properties/values (-webkit-*, -moz-*,
-                // -ms-*, -o-*, -khtml-*) are effectively open-ended — no
-                // fixed list could cover them all — so this is a PATTERN,
-                // not a literal-string list like "keywords" above.
-                // "(?<!:)" excludes vendor-prefixed PSEUDO-ELEMENTS like
-                // "::-webkit-scrollbar-thumb" — the generic identifier
-                // boundary this piece is wrapped in (see
-                // cachedRegexForConfig: below) doesn't catch that case
-                // because ":" isn't a "-"/alnum identifier character, so a
-                // pseudo-element's leading "::" would otherwise look like a
-                // perfectly good boundary even though this obviously isn't
-                // a property here.
-                @"extraKeywordPattern" : @"(?<!:)-(?:webkit|moz|ms|o|khtml)-[A-Za-z-]+",
+                // -ms-*, -o-*, -khtml-*) are an open-ended family — no
+                // fixed literal list can cover them. They are classified
+                // by the emitter, not the master regex: the candidate
+                // claims leading-dash runs and QLCCIsVendorPrefixedRun
+                // decides (it also rejects runs directly preceded by ':',
+                // so vendor-prefixed PSEUDO-ELEMENTS like
+                // "::-webkit-scrollbar-thumb" stay uncoloured — ':' is
+                // not an identifier-boundary character, so the candidate's
+                // lookarounds alone would let them through).
             },
 
             @"html" : @{
@@ -1391,9 +1422,15 @@ static dispatch_once_t gLanguageConfigsOnce;
                  QLCCTokenDefault);
         }
         if (kind == QLCCTokenCandidate) {
-            // Generic identifier run: one hash lookup decides it.
+            // Generic identifier run: one hash lookup decides it. The
+            // ':' predecessor matters only for leading-dash (CSS vendor)
+            // runs — the retired vendor piece's (?<!:) guard.
+            BOOL precededByColon =
+                m.range.location > 0 &&
+                [source characterAtIndex:m.range.location - 1] == ':';
             [self emitKeywordCandidatesInText:matchedText
                                    keywordSet:keywordSet
+                             precededByColon:precededByColon
                                          emit:emit];
         } else if (preprocHashAtLineStart) {
             // kPatCPreproc decided in code, not regex (see its note):
@@ -1717,12 +1754,28 @@ static dispatch_once_t gLanguageConfigsOnce;
 /// run with the number piece alone (gaps as Default) reproduces those
 /// claims exactly: substring \b checks agree with the source because a
 /// maximal dash run can only be followed by a non-boundary character.
+/// Leading-dash runs (vendor prefixes) classify through
+/// QLCCIsVendorPrefixedRun first; their misses re-enter the same number
+/// slow path.
 - (void)emitKeywordCandidatesInText:(NSString *)run
                           keywordSet:(NSSet<NSString *> *)keywordSet
+                    precededByColon:(BOOL)precededByColon
                                 emit:(QLCCEmitBlock)emit {
     if ([keywordSet containsObject:run]) {
         emit(run, QLCCTokenKeyword);
         return;
+    }
+    if (run.length > 0 && [run characterAtIndex:0] == '-') {
+        // Leading-dash run (CSS vendor prefixes): vendor-shaped ones are
+        // Keyword unless directly preceded by ':' ("::-webkit-scrollbar-
+        // thumb"). Everything else takes the same number slow path as
+        // mid-dash runs below — digits after a '-' are \b-boundary number
+        // claims ("-webkit-transform-2" keeps its inner number, exactly
+        // like "border-radius-2").
+        if (!precededByColon && QLCCIsVendorPrefixedRun(run)) {
+            emit(run, QLCCTokenKeyword);
+            return;
+        }
     }
     if ([run rangeOfString:@"-"].location == NSNotFound) {
         emit(run, QLCCTokenDefault);
@@ -1961,16 +2014,6 @@ static dispatch_once_t gLanguageConfigsOnce;
     }
     if (looseLeadingWord.count > 0) {
         QLCCAddPiece([QLCCHighlighter looseKeywordPatternForWords:looseLeadingWord],
-                     QLCCTokenKeyword, NO);
-    }
-
-    // Extra keyword-coloured PATTERN for open-ended families no fixed
-    // list could cover, e.g. CSS's "-webkit-*"/"-moz-*" vendor prefixes.
-    // Same identifier-boundary guard as the keyword pieces.
-    NSString *extraKeywordPattern = cfg[@"extraKeywordPattern"];
-    if (extraKeywordPattern.length > 0) {
-        QLCCAddPiece(([NSString stringWithFormat:@"(?<![A-Za-z0-9_-])(%@)(?![A-Za-z0-9_-])",
-                                 extraKeywordPattern]),
                      QLCCTokenKeyword, NO);
     }
 

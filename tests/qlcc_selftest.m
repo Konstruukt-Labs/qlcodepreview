@@ -541,6 +541,52 @@ int main(int argc, char *argv[]) {
         };
         runCase(cssCase, h);
 
+        // --- Round 5: vendor prefixes classified by the emitter ---
+        // Vendor runs are decided in emitKeywordCandidatesInText:…
+        // (QLCCIsVendorPrefixedRun), not by a master-regex piece. Lock in
+        // the shape rules: fixed prefixes only, [A-Za-z-]-only tail with
+        // at least one character, no ':' immediately before, and number
+        // slow-path splitting for digit tails.
+        NSString *cssVendHit = span(kKeyword, @"-webkit-transform");
+        NSString *cssVendShort = span(kKeyword, @"-o-transition");
+        NSString *cssVendKhtml = span(kKeyword, @"-khtml-user-select");
+        // Digit in the tail: not a property; the digit after '-' is a
+        // \b-boundary number claim, so the run splits.
+        NSString *cssVendNumTail =
+            [NSString stringWithFormat:@"-webkit-transform-%@", span(kNumber, @"2")];
+        const char *cssVendMust[] = {
+            cssVendHit.UTF8String, cssVendShort.UTF8String,
+            cssVendKhtml.UTF8String, cssVendNumTail.UTF8String, NULL,
+        };
+        const char *cssVendMustNot[] = {
+            // pseudo-element: ':' directly before the run
+            span(kKeyword, @"-webkit-scrollbar-thumb").UTF8String,
+            // empty tail
+            span(kKeyword, @"-ms-").UTF8String,
+            // uppercase prefix: not one of the fixed engines
+            span(kKeyword, @"-WEBKIT-mask").UTF8String,
+            // digit tail must not colour as one keyword
+            span(kKeyword, @"-webkit-transform-2").UTF8String,
+            // dash inside a run, no leading dash
+            span(kKeyword, @"a-webkit-b").UTF8String,
+            // ':' before a lowercase engine prefix
+            span(kKeyword, @"-o-prefocus").UTF8String,
+            NULL,
+        };
+        QLCCSelfTestCase cssVendorCase = {
+            .name = "css: vendor prefixes classified by emitter (shape/colon/number rules)",
+            .ext = "css",
+            .source =
+                ".a { -webkit-transform: translateX(2px); -o-transition: all;\n"
+                "     -khtml-user-select: none; -webkit-transform-2: x;\n"
+                "     -ms-: y; -WEBKIT-mask: z; a-webkit-b { }\n"
+                "     margin:-o-prefocus; }\n"
+                "::-webkit-scrollbar-thumb { width: 4px }\n",
+            .mustContain = cssVendMust,
+            .mustNotContain = cssVendMustNot,
+        };
+        runCase(cssVendorCase, h);
+
         // --- Round 4: CSS keyword false positives inside kebab-case selectors ---
         // Regression coverage: value/vendor keywords must not colour class-name
         // suffixes/pieces they merely happen to appear inside of.
