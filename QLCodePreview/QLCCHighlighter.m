@@ -102,9 +102,7 @@ static NSString *const kPatInterpVar =
 @property (nonatomic, strong) QLCCConfiguration *config;
 @end
 
-@implementation QLCCHighlighter {
-    NSCache<NSString *, NSRegularExpression *> *_regexCache;
-}
+@implementation QLCCHighlighter
 
 - (instancetype)initWithTheme:(QLCCTheme *)theme
                 configuration:(QLCCConfiguration *)configuration {
@@ -112,7 +110,6 @@ static NSString *const kPatInterpVar =
     if (self) {
         _theme = theme;
         _config = configuration;
-        _regexCache = [NSCache new];
     }
     return self;
 }
@@ -1519,11 +1516,11 @@ static dispatch_once_t gLanguageConfigsOnce;
 /// language supplies its own pattern via cfg[@"interpPattern"] (PHP's
 /// "$foo"/"{$expr}", Ruby's "#{expr}", JS/TS's "${expr}", Perl's
 /// "$scalar"/"@array", shell's "$VAR"/"${VAR}") — cached in the same
-/// `_regexCache` used for the per-language master regexes, under an
+/// shared regex cache used for the per-language master regexes, under an
 /// "interp:"-prefixed key so the two namespaces can't collide.
 - (nullable NSRegularExpression *)interpolationRegexForPattern:(NSString *)pattern {
     NSString *cacheKey = [@"interp:" stringByAppendingString:pattern];
-    NSRegularExpression *cached = [_regexCache objectForKey:cacheKey];
+    NSRegularExpression *cached = [[QLCCHighlighter sharedRegexCache] objectForKey:cacheKey];
     if (cached) return cached;
 
     NSError *err = nil;
@@ -1533,7 +1530,7 @@ static dispatch_once_t gLanguageConfigsOnce;
         QLCCLog(@"Failed to compile interpolation regex %@: %@", pattern, err.localizedDescription);
         return nil;
     }
-    [_regexCache setObject:regex forKey:cacheKey];
+    [[QLCCHighlighter sharedRegexCache] setObject:regex forKey:cacheKey];
     return regex;
 }
 
@@ -1578,11 +1575,29 @@ static dispatch_once_t gLanguageConfigsOnce;
     return out.count > 0 ? out : @[ [QLCCHighlighter segmentWithText:text kind:QLCCTokenString] ];
 }
 
+/// Class-level cache of compiled master and interpolation regexes. The
+/// patterns depend only on the static per-language configs (built once by
+/// +languageConfig:), never on theme or user settings, so one cache can
+/// be shared across all instances — and therefore across previews, since
+/// the provider builds a fresh QLCCHighlighter per request (which used to
+/// mean recompiling the language's ICU regex for every preview). NSCache
+/// is thread-safe; the count limit bounds the cache to roughly the number
+/// of built-in languages plus their interpolation patterns.
++ (NSCache<NSString *, NSRegularExpression *> *)sharedRegexCache {
+    static NSCache<NSString *, NSRegularExpression *> *cache;
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{
+        cache = [NSCache new];
+        cache.countLimit = 64;
+    });
+    return cache;
+}
+
 /// Build (and cache) the master regular expression for a language config.
 - (NSRegularExpression *)cachedRegexForConfig:(NSDictionary *)cfg
                                      language:(NSString *)language {
     NSString *cacheKey = language ?: @"text";
-    NSRegularExpression *cached = [_regexCache objectForKey:cacheKey];
+    NSRegularExpression *cached = [[QLCCHighlighter sharedRegexCache] objectForKey:cacheKey];
     if (cached) return cached;
 
     NSMutableArray<NSString *> *pieces = [NSMutableArray array];
@@ -1763,7 +1778,7 @@ static dispatch_once_t gLanguageConfigsOnce;
     objc_setAssociatedObject(regex, &kKindOrderKey, [kinds copy],
                              OBJC_ASSOCIATION_RETAIN_NONATOMIC);
 
-    [_regexCache setObject:regex forKey:cacheKey];
+    [[QLCCHighlighter sharedRegexCache] setObject:regex forKey:cacheKey];
     return regex;
 }
 
@@ -1774,7 +1789,7 @@ static char kKindOrderKey;
 /// Invariant: this MUST only be called with a *master* regex
 /// produced by `cachedRegexForConfig:` — that is the only place the parallel
 /// `kinds` array is attached (via `objc_setAssociatedObject` below). The
-/// same `_regexCache` also holds interpolation regexes (under `interp:`
+/// same shared regex cache also holds interpolation regexes (under `interp:`
 /// keys) which carry NO associated kinds; passing one of those here would
 /// silently read `nil` and fall back to `QLCCTokenDefault`.
 ///

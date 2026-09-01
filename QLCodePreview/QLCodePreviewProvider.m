@@ -26,54 +26,62 @@
     if (handler == NULL) {
         return;
     }
-    NSURL *fileURL = request.fileURL;
-    if (fileURL == nil) {
-        handler(nil, [self errorWithCode:NSFileReadInvalidFileNameError
-                                  reason:@"No file URL in the preview request"]);
-        return;
+
+    // The pipeline creates several file-sized temporaries (escaped copies,
+    // intermediate HTML, the UTF-8 data) and most Foundation methods used
+    // along the way return autoreleased objects. Draining them here, at
+    // the end of the request, keeps them from lingering in whatever pool
+    // Quick Look owns on this thread until its next drain.
+    @autoreleasepool {
+        NSURL *fileURL = request.fileURL;
+        if (fileURL == nil) {
+            handler(nil, [self errorWithCode:NSFileReadInvalidFileNameError
+                                      reason:@"No file URL in the preview request"]);
+            return;
+        }
+
+        // Honour the optional maxFileSize cap the user configured (default: off).
+        QLCCConfiguration *config = [QLCCConfiguration currentConfiguration];
+
+        NSString *source = [self readSourceAtURL:fileURL configuration:config];
+        if (source == nil) {
+            handler(nil, [self errorWithCode:NSFileReadUnknownError
+                                      reason:@"Could not read file as text"]);
+            return;
+        }
+
+        QLCCTheme *theme = [QLCCTheme themeNamed:config.effectiveThemeName
+                                       preferDark:config.isDarkMode];
+        QLCCHighlighter *highlighter =
+            [[QLCCHighlighter alloc] initWithTheme:theme configuration:config];
+
+        NSString *pathExt = [self effectiveExtensionForURL:fileURL];
+        NSString *html =
+            [highlighter htmlPreviewForSource:source pathExtension:pathExt];
+        if (html.length == 0) {
+            // Fall back to a minimal document so the preview never fails hard.
+            html = [@"<!DOCTYPE html><html><head><meta charset=\"UTF-8\">"
+                    @"</head><body><pre></pre></body></html>" copy];
+        }
+
+        NSData *data = [html dataUsingEncoding:NSUTF8StringEncoding];
+        NSString *title = fileURL.lastPathComponent ?: @"";
+
+        // The content size is only a loading hint for HTML previews; Quick Look
+        // reflows HTML to the panel. We mirror the legacy generator's 800x800.
+        QLPreviewReply *reply = [[QLPreviewReply alloc]
+            initWithDataOfContentType:UTTypeHTML
+                         contentSize:CGSizeMake(800, 800)
+                    dataCreationBlock:^NSData *_Nullable(QLPreviewReply *_Nonnull reply,
+                                                         NSError **_Nullable error) {
+            reply.title = title;
+            return data;
+        }];
+
+        QLCCLog(@"Previewed %@ (%lu bytes) as %@",
+                fileURL.lastPathComponent, (unsigned long)data.length, pathExt);
+        handler(reply, nil);
     }
-
-    // Honour the optional maxFileSize cap the user configured (default: off).
-    QLCCConfiguration *config = [QLCCConfiguration currentConfiguration];
-
-    NSString *source = [self readSourceAtURL:fileURL configuration:config];
-    if (source == nil) {
-        handler(nil, [self errorWithCode:NSFileReadUnknownError
-                                  reason:@"Could not read file as text"]);
-        return;
-    }
-
-    QLCCTheme *theme = [QLCCTheme themeNamed:config.effectiveThemeName
-                                   preferDark:config.isDarkMode];
-    QLCCHighlighter *highlighter =
-        [[QLCCHighlighter alloc] initWithTheme:theme configuration:config];
-
-    NSString *pathExt = [self effectiveExtensionForURL:fileURL];
-    NSString *html =
-        [highlighter htmlPreviewForSource:source pathExtension:pathExt];
-    if (html.length == 0) {
-        // Fall back to a minimal document so the preview never fails hard.
-        html = [@"<!DOCTYPE html><html><head><meta charset=\"UTF-8\">"
-                @"</head><body><pre></pre></body></html>" copy];
-    }
-
-    NSData *data = [html dataUsingEncoding:NSUTF8StringEncoding];
-    NSString *title = fileURL.lastPathComponent ?: @"";
-
-    // The content size is only a loading hint for HTML previews; Quick Look
-    // reflows HTML to the panel. We mirror the legacy generator's 800x800.
-    QLPreviewReply *reply = [[QLPreviewReply alloc]
-        initWithDataOfContentType:UTTypeHTML
-                     contentSize:CGSizeMake(800, 800)
-                dataCreationBlock:^NSData *_Nullable(QLPreviewReply *_Nonnull reply,
-                                                     NSError **_Nullable error) {
-        reply.title = title;
-        return data;
-    }];
-
-    QLCCLog(@"Previewed %@ (%lu bytes) as %@",
-            fileURL.lastPathComponent, (unsigned long)data.length, pathExt);
-    handler(reply, nil);
 }
 
 #pragma mark - Helpers
