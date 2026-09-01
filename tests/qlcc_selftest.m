@@ -37,19 +37,21 @@
 + (NSString *)cssFontFamily:(NSString *)font;
 @end
 
-// Known darkplus hex values (QLCCTheme.m +defaultDarkTheme). If these ever
-// change, update the constants below to match the point isn't the exact
-// colours, it's that DIFFERENT categories render DIFFERENT colours and the
-// same category stays consistent.
-static NSString *const kKeyword  = @"#569cd6";
-static NSString *const kString   = @"#d7ba7d";
-static NSString *const kComment  = @"#6a9955";
-static NSString *const kNumber   = @"#b5cea8";
-static NSString *const kPreproc  = @"#007acc";
-static NSString *const kVariable = @"#9cdcfe";
+// Known darkplus class→colour mapping (QLCCTheme.m +defaultDarkTheme;
+// wrapBody: emits one .class{color:hex} rule per token kind). The span
+// assertions below check classes, not colours — the point isn't the exact
+// colours, it's that DIFFERENT categories render DIFFERENT classes and the
+// same category stays consistent; one dedicated case below pins the
+// class→hex mapping itself.
+static NSString *const kKeyword  = @"k";
+static NSString *const kString   = @"s";
+static NSString *const kComment  = @"c";
+static NSString *const kNumber   = @"n";
+static NSString *const kPreproc  = @"p";
+static NSString *const kVariable = @"v";
 
-static NSString *span(NSString *color, NSString *text) {
-    return [NSString stringWithFormat:@"<span style=\"color:%@\">%@</span>", color, text];
+static NSString *span(NSString *cls, NSString *text) {
+    return [NSString stringWithFormat:@"<span class=%@>%@</span>", cls, text];
 }
 
 typedef struct {
@@ -134,7 +136,7 @@ int main(int argc, char *argv[]) {
         runCase(yamlCase, h);
 
         NSString *tomlKeySpan = span(kKeyword, @"name");
-        NSString *tomlStrSpan = [NSString stringWithFormat:@"<span style=\"color:%@\">&quot;prod&quot;</span>", kString];
+        NSString *tomlStrSpan = [NSString stringWithFormat:@"<span class=%@>&quot;prod&quot;</span>", kString];
         NSString *tomlNumSpan = span(kNumber, @"42");
         NSString *tomlBoolSpan = span(kPreproc, @"true");
         const char *tomlMust[] = {
@@ -696,6 +698,25 @@ int main(int argc, char *argv[]) {
                           && [htmlIn rangeOfString:@">"].location == NSNotFound       // '>' stripped
                           && [cssIn rangeOfString:@"\\\""].location != NSNotFound,    // '"' escaped, not bare
                       [NSString stringWithFormat:@"legit=%@ htmlIn=%@ cssIn=%@", legit, htmlIn, cssIn]);
+        }
+
+        // P2: token colours ship as one CSS class per kind plus a rule in
+        // the document stylesheet, not a style attribute per token. Pin the
+        // class→hex mapping for the fixed darkplus theme.
+        {
+            NSString *html = [h htmlPreviewForSource:@"int x = 1; // c\n\"s\" #p $v\n"
+                                       pathExtension:@"c"];
+            NSDictionary<NSString *, NSString *> *clsToHex = @{
+                @"k": @"#569cd6", @"s": @"#d7ba7d", @"c": @"#6a9955",
+                @"n": @"#b5cea8", @"p": @"#007acc", @"v": @"#9cdcfe",
+            };
+            BOOL allRules = YES;
+            for (NSString *cls in clsToHex) {
+                NSString *rule = [NSString stringWithFormat:@".%@{color:%@}", cls, clsToHex[cls]];
+                if ([html rangeOfString:rule].location == NSNotFound) allRules = NO;
+            }
+            checkCond("highlighter: stylesheet maps token classes to darkplus colours (P2)",
+                      allRules, html);
         }
 
         // M2: a built-in safety-net cap (kQLCCDefaultMaxFileSize) must exist

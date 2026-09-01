@@ -1822,6 +1822,21 @@ static char kKindOrderKey;
     return nil;
 }
 
+/// Single-letter CSS class for a token kind (see wrapBody:'s stylesheet).
+/// Nil for default text, same as colorForKind:.
+- (nullable NSString *)classForKind:(QLCCTokenKind)kind {
+    switch (kind) {
+        case QLCCTokenComment: return @"c";
+        case QLCCTokenString:  return @"s";
+        case QLCCTokenPreproc: return @"p";
+        case QLCCTokenNumber:  return @"n";
+        case QLCCTokenKeyword: return @"k";
+        case QLCCTokenVariable: return @"v";
+        case QLCCTokenDefault: return nil;
+    }
+    return nil;
+}
+
 /// HTML-escape a string for safe inclusion inside a <pre>/<span>.
 ///
 /// Bulk scan-and-copy: strings containing none of `&`, `<`, `>` are
@@ -1887,17 +1902,29 @@ static char kKindOrderKey;
 }
 
 - (NSString *)renderPlainPreWithSegments:(NSArray<QLCCSegment *> *)segments {
+    // Adjacent same-kind segments share one span (the line-number renderer
+    // has always coalesced like this; the plain renderer used to re-open a
+    // span per token) and colours come from the per-kind classes defined in
+    // wrapBody:'s stylesheet — a class attribute costs ~half the bytes of a
+    // style attribute, which measured ~30% of emitted HTML on large files.
     NSMutableString *body =
         [NSMutableString stringWithString:@"<pre class=\"code\">"];
+    NSString *openClass = nil;
     for (QLCCSegment *seg in segments) {
-        NSString *escaped = [QLCCHighlighter htmlEscape:seg.text];
-        NSString *color = [self colorForKind:seg.kind];
-        if (color) {
-            [body appendFormat:@"<span style=\"color:%@\">%@</span>", color, escaped];
-        } else {
-            [body appendString:escaped];
+        NSString *cls = [self classForKind:seg.kind];
+        if (cls) {
+            if (![openClass isEqualToString:cls]) {
+                if (openClass) [body appendString:@"</span>"];
+                [body appendFormat:@"<span class=%@>", cls];
+                openClass = cls;
+            }
+        } else if (openClass) {
+            [body appendString:@"</span>"];
+            openClass = nil;
         }
+        [body appendString:[QLCCHighlighter htmlEscape:seg.text]];
     }
+    if (openClass) [body appendString:@"</span>"];
     [body appendString:@"</pre>"];
     return body;
 }
@@ -1906,20 +1933,20 @@ static char kKindOrderKey;
     NSMutableString *body =
         [NSMutableString stringWithString:@"<table class=\"code\"><tbody>"];
     __block NSUInteger lineNo = 1;
-    __block NSString *openColor = nil;
+    __block NSString *openClass = nil;
 
     void (^closeSpan)(void) = ^{
-        if (openColor) {
+        if (openClass) {
             [body appendString:@"</span>"];
-            openColor = nil;
+            openClass = nil;
         }
     };
-    void (^openSpan)(NSString *) = ^(NSString *color) {
-        if (!openColor || ![openColor isEqualToString:color]) {
+    void (^openSpan)(NSString *) = ^(NSString *cls) {
+        if (!openClass || ![openClass isEqualToString:cls]) {
             closeSpan();
-            if (color) {
-                [body appendFormat:@"<span style=\"color:%@\">", color];
-                openColor = color;
+            if (cls) {
+                [body appendFormat:@"<span class=%@>", cls];
+                openClass = cls;
             }
         }
     };
@@ -1930,7 +1957,7 @@ static char kKindOrderKey;
 
     startRow();
     for (QLCCSegment *seg in segments) {
-        NSString *color = [self colorForKind:seg.kind];
+        NSString *cls = [self classForKind:seg.kind];
         NSString *escaped = [QLCCHighlighter htmlEscape:seg.text];
         NSArray<NSString *> *parts = [escaped componentsSeparatedByString:@"\n"];
         for (NSUInteger i = 0; i < parts.count; i++) {
@@ -1942,8 +1969,8 @@ static char kKindOrderKey;
             }
             NSString *part = parts[i];
             if (part.length == 0) continue;
-            if (color) {
-                openSpan(color);
+            if (cls) {
+                openSpan(cls);
             } else {
                 closeSpan();
             }
@@ -1962,6 +1989,17 @@ static char kKindOrderKey;
         self.config.wrapLines ? @"pre-wrap" : @"pre";
     NSString *font = [QLCCHighlighter cssFontFamily:self.config.font];
     NSUInteger tab = MAX((NSUInteger)1, self.config.tabWidth);
+
+    // One CSS rule per token kind so the renderers can emit a short
+    // class=k attribute instead of a style attribute on every token.
+    NSMutableString *tokenCSS = [NSMutableString stringWithCapacity:112];
+    for (NSInteger kind = QLCCTokenComment; kind <= QLCCTokenVariable; kind++) {
+        NSString *color = [self colorForKind:kind];
+        if (color) {
+            [tokenCSS appendFormat:@".%@{color:%@}",
+                              [self classForKind:kind], color];
+        }
+    }
 
     return [NSString stringWithFormat:
         @"<!DOCTYPE html>\n"
@@ -1987,12 +2025,13 @@ static char kKindOrderKey;
         @"  text-align:right; padding-right:%.0fpx; color:%@; "
         @"  white-space:pre; opacity:0.65; }\n"
         @"table.code td.lc { width:100%%; }\n"
+        @"%@\n"
         @"</style></head><body>%@</body></html>",
         self.theme.canvasColor, self.theme.defaultColor,
         font, (double)self.config.fontSize,
         (unsigned long)tab, (unsigned long)tab, whiteSpace,
         whiteSpace, (double)self.config.lineNumberGutterWidth,
-        self.theme.lineNumberColor, body];
+        self.theme.lineNumberColor, tokenCSS, body];
 }
 
 /// Quote a font family for use in CSS, accounting for multi-word names.
