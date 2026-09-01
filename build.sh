@@ -33,7 +33,7 @@
 #                              # the one manual Settings toggle still needed)
 #
 #  Environment:
-#    CONFIG=Release|Debug          (default: Debug)
+#    CONFIG=Release|Debug          (default: Release)
 #    UNIVERSAL=1                   # build a universal (arm64 + x86_64) binary
 #    BUNDLE_ID=...                 # override the host app's bundle identifier
 #    EXTENSION_BUNDLE_ID=...       # override the extension's bundle identifier
@@ -52,7 +52,7 @@ setopt err_exit no_unset
 # -----------------------------------------------------------------------------
 # Configuration
 # -----------------------------------------------------------------------------
-CONFIG="${CONFIG:-Debug}"
+CONFIG="${CONFIG:-Release}"
 ROOT="${0:A:h}"
 EXT_SRC_DIR="$ROOT/QLCodePreview"
 APP_SRC_DIR="$ROOT/QLCodePreviewApp"
@@ -114,7 +114,11 @@ COMMON_CFLAGS=(
 if [[ "$CONFIG" == "Debug" ]]; then
     COMMON_CFLAGS+=(-DDEBUG=1 -O0 -g)
 else
-    COMMON_CFLAGS+=(-DNDEBUG -O2)
+    # -Oz: optimize for size. This is a syntax highlighter with one hot
+    # regex-driven pass over the file; -O2/-O3 showed no measurable
+    # advantage for it, while -Oz trims a few % off the largest object
+    # (the ~2,000-line highlighter).
+    COMMON_CFLAGS+=(-DNDEBUG -Oz)
 fi
 
 # -----------------------------------------------------------------------------
