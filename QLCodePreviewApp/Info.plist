@@ -855,6 +855,79 @@
 				</array>
 			</dict>
 		</dict>
+		<dict>
+			<key>UTTypeIdentifier</key>
+			<string>com.konstruuktlabs.QLCodePreview.diz</string>
+			<key>UTTypeDescription</key>
+			<string>DIZ Description File</string>
+			<!-- FILE_ID.DIZ — plain-text archive description (BBS heritage),
+			     not source code, so it conforms to plain-text only. -->
+			<key>UTTypeConformsTo</key>
+			<array>
+				<string>public.plain-text</string>
+			</array>
+			<key>UTTypeTagSpecification</key>
+			<dict>
+				<key>public.filename-extension</key>
+				<array>
+					<string>diz</string>
+				</array>
+			</dict>
+		</dict>
+		<dict>
+			<key>UTTypeIdentifier</key>
+			<string>com.konstruuktlabs.QLCodePreview.nfo</string>
+			<key>UTTypeDescription</key>
+			<string>NFO Description File</string>
+			<!-- Warez/BBS release info; plain text like DIZ, not source code. -->
+			<key>UTTypeConformsTo</key>
+			<array>
+				<string>public.plain-text</string>
+			</array>
+			<key>UTTypeTagSpecification</key>
+			<dict>
+				<key>public.filename-extension</key>
+				<array>
+					<string>nfo</string>
+				</array>
+			</dict>
+		</dict>
+		<dict>
+			<key>UTTypeIdentifier</key>
+			<string>com.konstruuktlabs.QLCodePreview.sfv</string>
+			<key>UTTypeDescription</key>
+			<string>SFV Checksum File</string>
+			<!-- filename + CRC32 listings; plain text, not source code. -->
+			<key>UTTypeConformsTo</key>
+			<array>
+				<string>public.plain-text</string>
+			</array>
+			<key>UTTypeTagSpecification</key>
+			<dict>
+				<key>public.filename-extension</key>
+				<array>
+					<string>sfv</string>
+				</array>
+			</dict>
+		</dict>
+		<dict>
+			<key>UTTypeIdentifier</key>
+			<string>com.konstruuktlabs.QLCodePreview.readme</string>
+			<key>UTTypeDescription</key>
+			<string>Readme File</string>
+			<!-- Install/usage notes shipped with software; plain text. -->
+			<key>UTTypeConformsTo</key>
+			<array>
+				<string>public.plain-text</string>
+			</array>
+			<key>UTTypeTagSpecification</key>
+			<dict>
+				<key>public.filename-extension</key>
+				<array>
+					<string>readme</string>
+				</array>
+			</dict>
+		</dict>
 	</array>
 </dict>
 </plist>

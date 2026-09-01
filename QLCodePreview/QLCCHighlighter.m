@@ -240,6 +240,14 @@ static NSString *const kPatInterpVar =
             @"diff" : @"diff", @"patch" : @"diff", @"rej" : @"diff",
             @"tex" : @"tex", @"latex" : @"tex",
             @"txt" : @"text", @"log" : @"text",
+            // FILE_ID.DIZ (BBS archive descriptions), NFO (release info),
+            // SFV (CRC32 checksum listings), and .readme (install/usage
+            // notes): all plain text, but mapped explicitly so the intent
+            // is documented rather than relying on the unknown-extension
+            // fallback. "readme" also catches a dotless README filename
+            // via the provider's filename fallback.
+            @"diz" : @"text", @"nfo" : @"text", @"sfv" : @"text",
+            @"readme" : @"text",
         };
     });
     NSString *key = [ext lowercaseString];

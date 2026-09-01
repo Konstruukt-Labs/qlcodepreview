@@ -146,6 +146,10 @@
 				<string>com.konstruuktlabs.QLCodePreview.pascal-extra</string>
 				<string>com.konstruuktlabs.QLCodePreview.patch-extra</string>
 				<string>com.konstruuktlabs.QLCodePreview.tex</string>
+				<string>com.konstruuktlabs.QLCodePreview.diz</string>
+				<string>com.konstruuktlabs.QLCodePreview.nfo</string>
+				<string>com.konstruuktlabs.QLCodePreview.sfv</string>
+				<string>com.konstruuktlabs.QLCodePreview.readme</string>
 			</array>
 		</dict>
 		<key>NSExtensionPointIdentifier</key>

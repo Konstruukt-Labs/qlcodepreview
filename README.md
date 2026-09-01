@@ -47,50 +47,113 @@ sandboxed extension.
 
 ## Supported file types
 
-Dozens of source/config/markup languages: Swift, Objective-C, C/C++, Rust, Go,
-Python, Ruby, JavaScript/JSX, TypeScript, Java, Kotlin, Scala, SQL, Vue/Svelte
-components, Markdown, YAML, TOML, JSON, shell scripts, and many more. See
-`QLCodePreview/QLCCHighlighter.m` (`+languageForExtension:`) for the full
-extension→language map and `QLCodePreview/Info.plist` (`QLSupportedContentTypes`)
-for the claimed UTIs.
+Dozens of source/config/markup languages are supported. The full extension→language
+map lives in `QLCodePreview/QLCCHighlighter.m` (`+languageForExtension:`); the
+claimed UTIs are listed in `QLCodePreview/Info.plist` (`QLSupportedContentTypes`).
+Any extension can additionally be remapped in the app's **Custom File Types**
+pane (e.g. `myext → php`).
+
+| Category | Language | Extensions |
+| --- | --- | --- |
+| **C family** | C | `.c` |
+| | Objective‑C | `.h`, `.m` |
+| | Objective‑C++ | `.mm` |
+| | C++ | `.cpp`, `.cc`, `.cxx`, `.c++`, `.hpp`, `.hh`, `.hxx`, `.h++`, `.ino` |
+| **Apple / systems** | Swift | `.swift` |
+| | Rust | `.rs` |
+| | Go | `.go` |
+| | Zig | `.zig` |
+| | Nim | `.nim` |
+| **JVM** | Java | `.java` |
+| | Kotlin | `.kt`, `.kts` |
+| | Scala | `.scala`, `.sc` |
+| | Groovy | `.groovy`, `.gradle` |
+| | Clojure | `.clj`, `.cljs` |
+| **.NET** | C# | `.cs` |
+| | F# | `.fs` |
+| | Visual Basic | `.vb` |
+| **Web / JS** | JavaScript | `.js`, `.mjs`, `.cjs`, `.jsx` |
+| | TypeScript | `.ts` †, `.tsx` |
+| | PHP | `.php`, `.install`, `.module`, `.engine` |
+| | CSS / preprocessors | `.css`, `.scss`, `.sass`, `.less`, `.styl` |
+| | HTML | `.html` ‡, `.htm` ‡, `.xhtml` ‡, `.vue`, `.svelte` |
+| | XML | `.xml`, `.xsl`, `.xslt`, `.xsd`, `.rss`, `.svg`, `.resx`, `.csproj`, `.plist`, `.iml`, `.fxml`, `.rdf` |
+| **Scripting** | Python | `.py`, `.pyw`, `.pyi` |
+| | Ruby | `.rb`, `.rbw`, `.gemspec` |
+| | Perl | `.pl`, `.pm`, `.t` |
+| | Lua | `.lua` |
+| | Tcl | `.tcl` |
+| | Shell | `.sh`, `.bash`, `.zsh`, `.ksh`, `.csh`, `.tcsh`, `.fish`, `.command`, `.bashrc`, `.zshrc`, `.bash_profile`, `.profile`, `.bats`, `.ebuild`, `.eclass` |
+| | PowerShell | `.ps1`, `.psm1` |
+| **Data / config** | JSON | `.json`, `.json5`, `.jsonl` |
+| | YAML | `.yaml`, `.yml` |
+| | TOML | `.toml` |
+| | INI / config | `.ini`, `.cfg`, `.conf`, `.properties`, `.editorconfig`, `.gitconfig` |
+| **Build / infra** | Make | `.mk`, `.makefile`, `.gnumakefile`, `.am` |
+| | CMake | `.cmake` |
+| | GraphQL | `.graphql`, `.gql` |
+| | Terraform | `.tf`, `.tfvars` |
+| **Database** | SQL | `.sql`, `.psql`, `.ddl` |
+| **Docs / markup** | Markdown | `.md`, `.markdown`, `.adoc`, `.asciidoc`, `.rst` |
+| | LaTeX / TeX | `.tex`, `.latex` |
+| **Other languages** | R | `.r` |
+| | Dart | `.dart` |
+| | Elixir | `.ex`, `.exs` |
+| | Erlang | `.erl`, `.hrl` |
+| | Haskell | `.hs`, `.lhs` |
+| | Pascal | `.pas`, `.pp`, `.dpr` |
+| | Julia | `.jl` |
+| | Crystal | `.cr` |
+| **Misc** | Diff / patch | `.diff`, `.patch`, `.rej` |
+| | Plain text | `.txt`, `.log`, `.diz`, `.nfo`, `.sfv`, `.readme` |
+
+> † On current macOS, `.ts` is claimed by the system video type
+> (`public.mpeg-2-transport-stream`) and is **not** previewable as code.
+> `.tsx` works normally — see [Known limitations](#known-limitations-macos).
+>
+> ‡ `.html` / `.htm` / `.xhtml` are rendered by macOS's built-in HTML
+> previewer, not shown as colourised source — see
+> [Known limitations](#known-limitations-macos).
+
+Unknown extensions fall back to plain-text highlighting.
 
 ---
 
 ## Known limitations (macOS)
 
 A few common extensions **cannot be previewed as code**. In every case below
-the cause is the **operating system**, not QLCodePreview: on current macOS
-(verified on macOS 26 / darwin 25) a third-party Quick Look preview extension
-cannot override the built-in/system type that owns the extension. There is no
+the cause is the **operating system**, not QLCodePreview: macOS assigns the
+file an Apple **public** UTI for that extension, and a third-party Quick Look
+preview extension cannot override the system handler that owns it. There is no
 priority field in `UTExportedTypeDeclarations` and no public API to make a
-third-party UTI preferred over an Apple **public** UTI for a given extension, so
-no Quick Look code extension can work around these.
+third-party UTI preferred over a public one for a given extension. macOS picks
+the first matching **system** UTI and does **not** fall through to a secondary
+one (e.g. a TypeScript declaration). This behaviour is long-standing and
+unchanged through macOS 15 (Sequoia) / macOS 26.
 
 ### `.html` / `.htm` / `.xhtml` shown rendered, not as source
 
-macOS has a built-in HTML Quick Look previewer that always wins for
-`public.html`, even when QLCodePreview claims it. You'll see the **rendered
-page**, not colourised source. No in-extension workaround on this OS.
+macOS tags these `public.html` / `public.xhtml`, which the built-in Quick Look
+handler (historically `Web.qlgenerator`, now the modern system preview
+provider) claims and renders in a WebKit view. The system handler always takes
+precedence, so you see the **rendered page**, never colourised source. No
+in-extension workaround exists.
 
 ### `.ts` treated as video, not TypeScript
 
-macOS maps `.ts` to `public.mpeg-2-transport-stream` (an Apple public UTI
-conforming to `public.movie`), which beats every TypeScript UTI so `.ts`
-files are handed to a video handler and never reach QLCodePreview.
+Apple's CoreTypes maps `.ts` to `public.mpeg-2-transport-stream`, a public UTI
+that conforms to `public.movie`. Quick Look therefore hands the file to the
+system video handler and never reaches QLCodePreview. Any TypeScript UTI (e.g.
+`com.microsoft.typescript`) is secondary and is never selected. This can also
+affect Spotlight metadata in some scenarios.
 
 **`.tsx` is unaffected and previews correctly.** Practical workaround: rename
 or copy the file to `.tsx`.
 
 ### Why these can't be fixed in code
 
-Both are the same class of problem: the OS assigns the file a system-owned type
-that conforms to nothing QLCodePreview claims, so Quick Look never offers the
-file to the extension.
-
-This is plausibly **version-dependent** older macOS releases may have allowed
-third-party extensions to override these so it's worth re-testing on other
-versions. But on macOS 26 these two are not achievable by any third-party
-extension.
+Both are the same root cause: the OS owns the extension with a public UTI the
+extension can't outrank.
 
 ## How it works
 
