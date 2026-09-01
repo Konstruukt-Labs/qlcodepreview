@@ -2234,6 +2234,64 @@ static char kKeywordSetKey;
     return out;
 }
 
+/// htmlEscape's append-into variant for the renderers, which appended
+/// the returned string immediately anyway. On the no-specials fast path
+/// (most tokens) the text is appended straight into `out` — no transient
+/// NSMutableString per token — and the slow path reuses htmlEscape's
+/// chunked run-copy loop against `out` instead of a private buffer.
++ (void)appendEscapedString:(NSString *)s toString:(NSMutableString *)out {
+    const NSUInteger len = s.length;
+    if (len == 0) return;
+
+    enum { kChunk = 1024 };
+    unichar buf[kChunk];
+
+    NSUInteger first = NSNotFound;
+    for (NSUInteger off = 0; off < len && first == NSNotFound; off += kChunk) {
+        const NSUInteger n = MIN(kChunk, len - off);
+        CFStringGetCharacters((CFStringRef)s,
+                              CFRangeMake((CFIndex)off, (CFIndex)n), buf);
+        for (NSUInteger i = 0; i < n; i++) {
+            const unichar c = buf[i];
+            if (c == '&' || c == '<' || c == '>') {
+                first = off + i;
+                break;
+            }
+        }
+    }
+    if (first == NSNotFound) {
+        [out appendString:s];
+        return;
+    }
+    if (first > 0) [out appendString:[s substringToIndex:first]];
+
+    for (NSUInteger idx = first; idx < len; ) {
+        const NSUInteger n = MIN(kChunk, len - idx);
+        CFStringGetCharacters((CFStringRef)s,
+                              CFRangeMake((CFIndex)idx, (CFIndex)n), buf);
+        NSUInteger run = 0;
+        for (NSUInteger i = 0; i < n; i++) {
+            const unichar c = buf[i];
+            if (c != '&' && c != '<' && c != '>') continue;
+            if (i > run) {
+                CFStringAppendCharacters((CFMutableStringRef)out,
+                                         buf + run, (CFIndex)(i - run));
+            }
+            switch (c) {
+                case '&': [out appendString:@"&amp;"]; break;
+                case '<': [out appendString:@"&lt;"];  break;
+                case '>': [out appendString:@"&gt;"];  break;
+            }
+            run = i + 1;
+        }
+        if (n > run) {
+            CFStringAppendCharacters((CFMutableStringRef)out,
+                                     buf + run, (CFIndex)(n - run));
+        }
+        idx += n;
+    }
+}
+
 static NSString *const kLNRowOpenA = @"<tr><td class=\"ln\">";
 static NSString *const kLNRowOpenB = @"</td><td class=\"lc\">";
 static NSString *const kLNRowClose = @"</td></tr>";
@@ -2284,7 +2342,7 @@ static NSString *const kLNRowClose = @"</td></tr>";
             [body appendString:@"</span>"];
             openKind = QLCCTokenDefault;
         }
-        [body appendString:[QLCCHighlighter htmlEscape:text]];
+        [QLCCHighlighter appendEscapedString:text toString:body];
     }];
     if (openKind != QLCCTokenDefault) [body appendString:@"</span>"];
     [body appendString:@"</pre>"];
@@ -2328,13 +2386,15 @@ static NSString *const kLNRowClose = @"</td></tr>";
     startRow();
     [self emitTokensForSource:source language:language config:cfg
                          emit:^(NSString *text, QLCCTokenKind kind) {
-        NSString *escaped = [QLCCHighlighter htmlEscape:text];
-        const NSUInteger len = escaped.length;
+        const NSUInteger len = text.length;
         if (len == 0) return;
         NSString *span = [self cachedSpanOpenForKind:kind];
 
+        // Newlines are never escaped, so splitting the raw token gives
+        // exactly the pieces splitting the escaped text did, and escaping
+        // each piece independently is char-local and byte-identical.
         NSRange firstNL =
-            [escaped rangeOfString:@"\n" options:NSLiteralSearch];
+            [text rangeOfString:@"\n" options:NSLiteralSearch];
         if (firstNL.location == NSNotFound) {
             // Single-line token (the overwhelming majority).
             if (span) {
@@ -2342,7 +2402,7 @@ static NSString *const kLNRowClose = @"</td></tr>";
             } else {
                 closeSpan();
             }
-            [body appendString:escaped];
+            [QLCCHighlighter appendEscapedString:text toString:body];
             return;
         }
 
@@ -2354,7 +2414,7 @@ static NSString *const kLNRowClose = @"</td></tr>";
         for (;;) {
             NSRange rest = NSMakeRange(start, len - start);
             NSRange nl =
-                [escaped rangeOfString:@"\n" options:NSLiteralSearch range:rest];
+                [text rangeOfString:@"\n" options:NSLiteralSearch range:rest];
             const NSUInteger end =
                 nl.location == NSNotFound ? len : nl.location;
             if (!first) {
@@ -2366,13 +2426,14 @@ static NSString *const kLNRowClose = @"</td></tr>";
             first = NO;
             const NSUInteger pieceLen = end - start;
             if (pieceLen > 0) {
+                NSString *piece = [text substringWithRange:
+                                       NSMakeRange(start, pieceLen)];
                 if (span) {
                     openSpan(span, kind);
                 } else {
                     closeSpan();
                 }
-                [body appendString:[escaped substringWithRange:
-                                        NSMakeRange(start, pieceLen)]];
+                [QLCCHighlighter appendEscapedString:piece toString:body];
             }
             if (nl.location == NSNotFound) break;
             start = end + 1;
