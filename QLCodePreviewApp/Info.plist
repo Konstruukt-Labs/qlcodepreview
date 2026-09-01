@@ -12,6 +12,18 @@
 	<string>$(PRODUCT_BUNDLE_IDENTIFIER)</string>
 	<key>CFBundleInfoDictionaryVersion</key>
 	<string>6.0</string>
+	<key>CFBundleIconFile</key>
+	<string>AppIcon</string>
+	<!--
+		CFBundleIconName resolves the icon from Assets.car, which build.sh
+		compiles from Assets/AppIcon.icon via actool. macOS 26 uses the CAR
+		renditions (Liquid Glass variant); older releases use the flattened
+		AppIcon.icns that actool auto-generates from the same .icon document
+		(referenced here by CFBundleIconFile). One icon source, two
+		representations.
+	-->
+	<key>CFBundleIconName</key>
+	<string>AppIcon</string>
 	<key>CFBundleName</key>
 	<string>$(PRODUCT_NAME)</string>
 	<key>CFBundlePackageType</key>

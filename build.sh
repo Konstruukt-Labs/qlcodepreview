@@ -1,6 +1,8 @@
 #!/bin/zsh -f
 # =============================================================================
-#  build.sh — command-line build of QLCodePreview, no Xcode required.
+#  build.sh — command-line build of QLCodePreview, no Xcode project
+#  required (the icon step needs actool, which ships with Xcode — the
+#  CI runner provides it).
 #
 #  Produces:
 #    build/QLCodePreview.app                                    (host app)
@@ -308,6 +310,43 @@ sed \
     "$APP_SRC_DIR/Info.plist" > "$APP_PLIST"
 plutil -lint "$APP_PLIST"
 plutil -convert binary1 "$APP_PLIST"
+
+# App icon: AppIcon.icon (the Icon Composer source document) is the single
+# source of truth for the icon.
+# actool compiles it into Assets.car, whose CAR renditions macOS 26 renders
+# as the Liquid Glass icon (looked up via CFBundleIconName), and emits the
+# flattened AppIcon.icns fallback for pre-26 releases from the same
+# document. There is deliberately no separately maintained icns; editing
+# the icon means editing the .icon in Icon Composer, nothing else.
+echo "▶ Compiling app icon (AppIcon.icon → Assets.car + fallback icns)…"
+ICON_SRC_DIR="$APP_SRC_DIR/Assets/AppIcon.icon"
+ACTOOL="$(xcrun --find actool 2>/dev/null)" || ACTOOL=""
+if [[ -z "$ACTOOL" || ! -d "$ICON_SRC_DIR" ]]; then
+    echo "✗ actool or $ICON_SRC_DIR missing — an iconless bundle is a broken bundle." >&2
+    exit 1
+fi
+ICON_STAGING="$BUILD_DIR/icon-staging"
+mkdir -p "$ICON_STAGING"
+# actool exits 0 even on failure; capture output and check for the
+# products instead of trusting the status.
+ACTOOL_OUT="$("$ACTOOL" --compile "$ICON_STAGING" \
+    --platform macosx \
+    --minimum-deployment-target "$MIN_MACOS" \
+    --app-icon AppIcon \
+    --output-partial-info-plist "$ICON_STAGING/partial-info.plist" \
+    "$ICON_SRC_DIR" 2>&1)" || true
+ASSETS_CAR="$ICON_STAGING/Assets.car"
+if [[ ! -f "$ASSETS_CAR" ]]; then
+    echo "$ACTOOL_OUT"
+    echo "✗ actool produced no Assets.car — icon compilation failed" >&2
+    exit 1
+fi
+cp "$ASSETS_CAR" "$APP_RESOURCES_DIR/Assets.car"
+if [[ -f "$ICON_STAGING/AppIcon.icns" ]]; then
+    cp "$ICON_STAGING/AppIcon.icns" "$APP_RESOURCES_DIR/AppIcon.icns"
+else
+    echo "⚠ actool emitted no AppIcon.icns — pre-26 releases would show a generic icon" >&2
+fi
 
 echo "▶ Code signing $HOST_APP_NAME.app (ad-hoc, sealing embedded extension)…"
 HOST_ENT_PATH="$APP_SRC_DIR/QLCodePreview.entitlements"
