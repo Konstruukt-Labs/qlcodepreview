@@ -55,23 +55,23 @@ static NSString *const kPatRemLineComment   = @"(?:REM|')[^\\n]*";   // BASIC / 
 //   see the DEBUG assert below.)
 
 // Block comments (may span lines — non-greedy).
-static NSString *const kPatCBlockComment    = @"\\/\\*(?:.|\\n)*?\\*\\/";   // /* */
-static NSString *const kPatXmlComment        = @"<\\!--(?:.|\\n)*?-->";      // <!-- -->
-static NSString *const kPatLuaBlockComment  = @"--\\[\\[(?:.|\\n)*?\\]\\]"; // --[[ ]]
-static NSString *const kPatHaskellBlock     = @"\\{-(?:.|\\n)*?-\\}";       // {- -}
-static NSString *const kPatFSharpBlock      = @"\\(\\*(?:.|\\n)*?\\*\\)";   // (* ... *)
+static NSString *const kPatCBlockComment    = @"\\/\\*[\\s\\S]*?\\*\\/";   // /* */
+static NSString *const kPatXmlComment        = @"<\\!--[\\s\\S]*?-->";      // <!-- -->
+static NSString *const kPatLuaBlockComment  = @"--\\[\\[[\\s\\S]*?\\]\\]"; // --[[ ]]
+static NSString *const kPatHaskellBlock     = @"\\{-[\\s\\S]*?-\\}";       // {- -}
+static NSString *const kPatFSharpBlock      = @"\\(\\*[\\s\\S]*?\\*\\)";   // (* ... *)
 
 // String literals.
 static NSString *const kPatDoubleString = @"\"(?:\\\\.|[^\"\\\\\\n])*\"";
 static NSString *const kPatSingleString = @"'(?:\\\\.|[^'\\\\\\n])*'";
 static NSString *const kPatBacktickString = @"`(?:\\\\.|[^`\\\\\\n])*`";
 static NSString *const kPatPythonTriple =
-    @"\"\"\"(?:.|\\n)*?\"\"\"|'''(?:.|\\n)*?'''";
+    @"\"\"\"[\\s\\S]*?\"\"\"|'''[\\s\\S]*?'''";
 // Swift extended raw string literals: #"…"#, ##"…"##, … — one or more '#'
 // pairs around a double-quoted body. Narrow on purpose: it requires a real
 // opening quote, so it cannot swallow Swift compiler directives (#if,
 // #available, #selector, …) the way kPatHashLineComment did.
-static NSString *const kPatSwiftRawString = @"#+\"(?:.|\\n)*?\"#+";
+static NSString *const kPatSwiftRawString = @"#+\"[\\s\\S]*?\"#+";
 
 // Numeric literals (hex / binary / float / exponent, optional type suffix).
 static NSString *const kPatNumber =
@@ -751,7 +751,7 @@ static dispatch_once_t gLanguageConfigsOnce;
 
             @"ruby" : @{
                 @"lineComments" : @[ kPatHashLineComment ],
-                @"blockComments" : @[ @"=begin(?:.|\\n)*?=end" ],
+                @"blockComments" : @[ @"=begin[\\s\\S]*?=end" ],
                 @"strings" : @[ kPatDoubleString, kPatSingleString ],
                 @"keywords" : @[
                     @"BEGIN", @"END", @"alias", @"and", @"begin", @"break", @"case",

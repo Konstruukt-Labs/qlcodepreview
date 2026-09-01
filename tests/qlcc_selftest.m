@@ -135,6 +135,23 @@ int main(int argc, char *argv[]) {
         };
         runCase(yamlCase, h);
 
+        // P5a: multi-line block comments must highlight in CRLF files too.
+        // ICU's '.' excludes every line terminator (\r included), so the
+        // old (?:.|\n) comment bodies could never cross a CRLF — the whole
+        // match failed and CRLF block comments rendered as plain text.
+        // [\s\S] matches everything, including \r.
+        {
+            NSString *crlfComment = span(kComment, @"/* first\r\n   second */");
+            const char *crlfMust[] = { crlfComment.UTF8String, NULL };
+            QLCCSelfTestCase crlfCase = {
+                .name = "objc: CRLF multi-line block comment highlights (P5a)",
+                .ext = "m",
+                .source = "int x = 1; /* first\r\n   second */ int y = 2;\n",
+                .mustContain = crlfMust,
+            };
+            runCase(crlfCase, h);
+        }
+
         NSString *tomlKeySpan = span(kKeyword, @"name");
         NSString *tomlStrSpan = [NSString stringWithFormat:@"<span class=%@>&quot;prod&quot;</span>", kString];
         NSString *tomlNumSpan = span(kNumber, @"42");
