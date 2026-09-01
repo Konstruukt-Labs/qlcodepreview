@@ -3,7 +3,10 @@
 //  QLCodePreview
 //
 
-@import Cocoa;
+// Foundation only — no AppKit. The extension renders HTML replies; it
+// needs nothing from AppKit, and skipping it avoids loading/registering
+// the framework's classes in the extension process at launch.
+@import Foundation;
 @import UniformTypeIdentifiers;
 @import QuickLookUI;
 
