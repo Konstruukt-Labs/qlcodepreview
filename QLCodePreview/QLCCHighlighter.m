@@ -26,13 +26,13 @@ typedef NS_ENUM(NSInteger, QLCCTokenKind) {
     QLCCTokenVariable,
 };
 
-/// A run of text plus the colour category it belongs to.
-@interface QLCCSegment : NSObject
-@property (nonatomic, copy) NSString *text;
-@property (nonatomic) QLCCTokenKind kind;
-@end
-@implementation QLCCSegment
-@end
+/// Streaming token sink: every tokenizer hands the runs of text it finds,
+/// plus their colour category, to an emit block in strict document order.
+/// The renderers consume tokens front-to-back, so nothing ever
+/// materialises the whole file as ~200k intermediate segment objects
+/// (measured: +11 MB retained and ~273k live malloc blocks for a 2 MB
+/// source under the previous build-an-array design).
+typedef void (^QLCCEmitBlock)(NSString *text, QLCCTokenKind kind);
 
 // Forward declaration so the language-config builder below can derive one
 // config from another inline. Implementation is at the bottom of this file.
@@ -139,19 +139,15 @@ static NSString *const kPatInterpVar =
     // own test fixtures, and for modern short-open-tag-less snippets) skips
     // this entirely and is tokenised exactly as before — zero behaviour
     // change for that case.
-    NSArray<QLCCSegment *> *segments;
-    if ([lang isEqualToString:@"php"] && [QLCCHighlighter sourceHasPHPOpenTag:source]) {
-        segments = [self tokeniseEmbeddedPHPSource:source];
-    } else if ([lang isEqualToString:@"markdown"]) {
-        segments = [self tokeniseMarkdownSource:source];
-    } else {
-        segments = [self tokeniseSource:source language:lang config:cfg];
-    }
-
+    // Tokenisation is streamed straight into the renderer (see
+    // -emitTokensForSource:language:config:emit:): PHP files with a real
+    // opening tag route through the embedded-HTML tokenizer, markdown
+    // through the fence splitter, everything else through the language's
+    // master regex — all behind one emit-block API.
     NSString *body =
         self.config.showLineNumbers
-            ? [self renderLineNumbersTableWithSegments:segments]
-            : [self renderPlainPreWithSegments:segments];
+            ? [self renderLineNumbersTableWithSource:source language:lang config:cfg]
+            : [self renderPlainPreWithSource:source language:lang config:cfg];
 
     return [self wrapBody:body];
 }
@@ -1212,7 +1208,7 @@ static dispatch_once_t gLanguageConfigsOnce;
                 ],
             },
 
-            @"diff" : @{ /* handled specially in tokenise */ },
+            @"diff" : @{ /* handled specially by the emit dispatcher */ },
 
             @"tex" : @{
                 @"lineComments" : @[ @"%[^\\n]*" ],
@@ -1243,24 +1239,40 @@ static dispatch_once_t gLanguageConfigsOnce;
 
 #pragma mark - Tokenisation
 
-/// Walk `source`, splitting it into coloured segments using a single master
-/// regular expression assembled from the language config.
-- (NSArray<QLCCSegment *> *)tokeniseSource:(NSString *)source
-                                  language:(NSString *)language
-                                    config:(NSDictionary *)cfg {
-    if ([language isEqualToString:@"diff"]) {
-        return [self tokeniseDiff:source];
+/// Tokenise `source` for `language`, handing each run of text plus its
+/// colour category to `emit` in strict document order. This routes to the
+/// right tokenizer: PHP files with a real opening tag split into HTML/PHP
+/// runs tokenised by their own configs (a pure-PHP file with no literal
+/// "<?php"/"<?=" anywhere skips that entirely), markdown splits on fenced
+/// code blocks, diffs colour by line prefix, and everything else runs
+/// through the language's master regex.
+- (void)emitTokensForSource:(NSString *)source
+                   language:(NSString *)language
+                     config:(NSDictionary *)cfg
+                       emit:(QLCCEmitBlock)emit {
+    if ([language isEqualToString:@"php"] && [QLCCHighlighter sourceHasPHPOpenTag:source]) {
+        [self emitEmbeddedPHPTokens:source emit:emit];
+    } else if ([language isEqualToString:@"markdown"]) {
+        [self emitMarkdownTokens:source emit:emit];
+    } else if ([language isEqualToString:@"diff"]) {
+        [self emitDiffTokens:source emit:emit];
+    } else {
+        [self emitMasterRegexTokensForSource:source language:language config:cfg emit:emit];
     }
+}
 
+/// Walk `source` with the language's single master regular expression
+/// (assembled by cachedRegexForConfig:), emitting each coloured token.
+- (void)emitMasterRegexTokensForSource:(NSString *)source
+                              language:(NSString *)language
+                                config:(NSDictionary *)cfg
+                                  emit:(QLCCEmitBlock)emit {
     NSRegularExpression *regex = [self cachedRegexForConfig:cfg language:language];
     if (!regex) {
-        QLCCSegment *whole = [QLCCSegment new];
-        whole.text = source;
-        whole.kind = QLCCTokenDefault;
-        return @[ whole ];
+        emit(source, QLCCTokenDefault);
+        return;
     }
 
-    NSMutableArray<QLCCSegment *> *segments = [NSMutableArray array];
     __block NSUInteger cursor = 0;
     const NSRange wholeRange = NSMakeRange(0, source.length);
     const BOOL interpolates = [cfg[@"interpolates"] boolValue];
@@ -1283,36 +1295,31 @@ static dispatch_once_t gLanguageConfigsOnce;
                          usingBlock:^(NSTextCheckingResult *m,
                                       NSMatchingFlags flags, BOOL *stop) {
         if (m.range.location > cursor) {
-            [segments addObject:[QLCCHighlighter
-                defaultSegment:[source substringWithRange:
-                                    NSMakeRange(cursor, m.range.location - cursor)]]];
+            emit([source substringWithRange:
+                      NSMakeRange(cursor, m.range.location - cursor)],
+                 QLCCTokenDefault);
         }
         QLCCTokenKind kind = [QLCCHighlighter kindOfMatch:m inRegex:regex];
         NSString *matchedText = [source substringWithRange:m.range];
         if (interpolates && kind == QLCCTokenString && matchedText.length > 0 &&
             [matchedText characterAtIndex:0] == interpDelimiter) {
-            [segments addObjectsFromArray:
-                [self interpolatedSegmentsForString:matchedText pattern:interpPattern]];
+            [self emitInterpolatedTokensForString:matchedText
+                                          pattern:interpPattern
+                                             emit:emit];
         } else {
-            QLCCSegment *seg = [QLCCSegment new];
-            seg.text = matchedText;
-            seg.kind = kind;
-            [segments addObject:seg];
+            emit(matchedText, kind);
         }
         cursor = m.range.location + m.range.length;
     }];
 
     if (cursor < source.length) {
-        [segments addObject:[QLCCHighlighter
-            defaultSegment:[source substringFromIndex:cursor]]];
+        emit([source substringFromIndex:cursor], QLCCTokenDefault);
     }
-    return segments;
 }
 
 /// Diff hunk colouring: + lines green, - lines red, @@ headers blue.
-- (NSArray<QLCCSegment *> *)tokeniseDiff:(NSString *)source {
+- (void)emitDiffTokens:(NSString *)source emit:(QLCCEmitBlock)emit {
     NSArray<NSString *> *lines = [source componentsSeparatedByString:@"\n"];
-    NSMutableArray<QLCCSegment *> *segments = [NSMutableArray array];
     for (NSUInteger i = 0; i < lines.count; i++) {
         NSString *line = lines[i];
         QLCCTokenKind kind = QLCCTokenDefault;
@@ -1323,18 +1330,11 @@ static dispatch_once_t gLanguageConfigsOnce;
         } else if ([line hasPrefix:@"-"] && ![line hasPrefix:@"--"]) {
             kind = QLCCTokenString; // red via string slot
         }
-        QLCCSegment *seg = [QLCCSegment new];
-        seg.text = line;
-        seg.kind = kind;
-        [segments addObject:seg];
+        emit(line, kind);
         if (i + 1 < lines.count) {
-            QLCCSegment *nl = [QLCCSegment new];
-            nl.text = @"\n";
-            nl.kind = QLCCTokenDefault;
-            [segments addObject:nl];
+            emit(@"\n", QLCCTokenDefault);
         }
     }
-    return segments;
 }
 
 + (BOOL)sourceHasPHPOpenTag:(NSString *)source {
@@ -1351,7 +1351,7 @@ static dispatch_once_t gLanguageConfigsOnce;
 /// text). Text before the first opening tag (or after the last closing
 /// tag) is HTML, matching real PHP semantics: only text between tags is
 /// ever executed as PHP.
-- (NSArray<QLCCSegment *> *)tokeniseEmbeddedPHPSource:(NSString *)source {
+- (void)emitEmbeddedPHPTokens:(NSString *)source emit:(QLCCEmitBlock)emit {
     static NSRegularExpression *delimRegex;
     static dispatch_once_t once;
     dispatch_once(&once, ^{
@@ -1365,13 +1365,13 @@ static dispatch_once_t gLanguageConfigsOnce;
         }
     });
     if (!delimRegex) {
-        return [self tokeniseSource:source language:@"php"
-                              config:[QLCCHighlighter languageConfig:@"php"]];
+        return [self emitMasterRegexTokensForSource:source language:@"php"
+                                              config:[QLCCHighlighter languageConfig:@"php"]
+                                                emit:emit];
     }
 
     NSDictionary *htmlCfg = [QLCCHighlighter languageConfig:@"html"];
     NSDictionary *phpCfg = [QLCCHighlighter languageConfig:@"php"];
-    NSMutableArray<QLCCSegment *> *segments = [NSMutableArray array];
 
     __block NSUInteger cursor = 0;
     __block BOOL inPHP = NO;
@@ -1380,11 +1380,10 @@ static dispatch_once_t gLanguageConfigsOnce;
     void (^emitChunk)(NSRange, BOOL) = ^(NSRange range, BOOL asPHP) {
         if (range.length == 0) return;
         NSString *chunk = [source substringWithRange:range];
-        NSArray<QLCCSegment *> *chunkSegments =
-            [self tokeniseSource:chunk
-                         language:(asPHP ? @"php" : @"html")
-                           config:(asPHP ? phpCfg : htmlCfg)];
-        [segments addObjectsFromArray:chunkSegments];
+        [self emitMasterRegexTokensForSource:chunk
+                                    language:(asPHP ? @"php" : @"html")
+                                      config:(asPHP ? phpCfg : htmlCfg)
+                                        emit:emit];
     };
 
     [delimRegex enumerateMatchesInString:source
@@ -1418,20 +1417,18 @@ static dispatch_once_t gLanguageConfigsOnce;
     if (cursor < source.length) {
         emitChunk(NSMakeRange(cursor, source.length - cursor), inPHP);
     }
-
-    return segments;
 }
 
 /// Split a Markdown source into runs of plain Markdown and ```lang ... ```
 /// (or ~~~lang ... ~~~) fenced code blocks, tokenising each fenced block's
 /// body with its OWN existing per-language tokenizer (dispatched via
 /// +languageForFenceTag:) — the same "which existing tokenizer runs on
-/// which slice of text" idea as -tokeniseEmbeddedPHPSource:. The fence
+/// which slice of text" idea as -emitEmbeddedPHPTokens:. The fence
 /// delimiter lines themselves (and the language tag) are re-emitted
 /// verbatim, unstyled. Markdown otherwise has no structural highlighting
 /// of its own (see the "markdown" config above), so a file with no fenced
 /// blocks at all renders exactly as before this change.
-- (NSArray<QLCCSegment *> *)tokeniseMarkdownSource:(NSString *)source {
+- (void)emitMarkdownTokens:(NSString *)source emit:(QLCCEmitBlock)emit {
     static NSRegularExpression *fenceRegex;
     static dispatch_once_t once;
     dispatch_once(&once, ^{
@@ -1453,10 +1450,10 @@ static dispatch_once_t gLanguageConfigsOnce;
 
     NSDictionary *mdCfg = [QLCCHighlighter languageConfig:@"markdown"];
     if (!fenceRegex) {
-        return [self tokeniseSource:source language:@"markdown" config:mdCfg];
+        [self emitMasterRegexTokensForSource:source language:@"markdown" config:mdCfg emit:emit];
+        return;
     }
 
-    NSMutableArray<QLCCSegment *> *segments = [NSMutableArray array];
     __block NSUInteger cursor = 0;
     const NSRange wholeRange = NSMakeRange(0, source.length);
 
@@ -1468,8 +1465,8 @@ static dispatch_once_t gLanguageConfigsOnce;
         if (m.range.location > cursor) {
             NSString *before = [source substringWithRange:
                                     NSMakeRange(cursor, m.range.location - cursor)];
-            [segments addObjectsFromArray:
-                [self tokeniseSource:before language:@"markdown" config:mdCfg]];
+            [self emitMasterRegexTokensForSource:before language:@"markdown"
+                                           config:mdCfg emit:emit];
         }
 
         NSRange langRange = [m rangeAtIndex:2];
@@ -1482,34 +1479,30 @@ static dispatch_once_t gLanguageConfigsOnce;
 
         // Opening fence line (delimiter + language tag) re-emitted verbatim.
         NSRange openRange = NSMakeRange(m.range.location, bodyRange.location - m.range.location);
-        [segments addObject:[QLCCHighlighter
-            defaultSegment:[source substringWithRange:openRange]]];
+        emit([source substringWithRange:openRange], QLCCTokenDefault);
 
         if (bodyRange.length > 0) {
             NSString *body = [source substringWithRange:bodyRange];
-            NSArray<QLCCSegment *> *bodySegments =
-                ([fenceLang isEqualToString:@"php"] && [QLCCHighlighter sourceHasPHPOpenTag:body])
-                    ? [self tokeniseEmbeddedPHPSource:body]
-                    : [self tokeniseSource:body language:fenceLang config:fenceCfg];
-            [segments addObjectsFromArray:bodySegments];
+            if ([fenceLang isEqualToString:@"php"] && [QLCCHighlighter sourceHasPHPOpenTag:body]) {
+                [self emitEmbeddedPHPTokens:body emit:emit];
+            } else {
+                [self emitMasterRegexTokensForSource:body language:fenceLang
+                                                config:fenceCfg emit:emit];
+            }
         }
 
         // Closing fence line re-emitted verbatim.
         NSUInteger bodyEnd = bodyRange.location + bodyRange.length;
         NSRange closeRange = NSMakeRange(bodyEnd, (m.range.location + m.range.length) - bodyEnd);
-        [segments addObject:[QLCCHighlighter
-            defaultSegment:[source substringWithRange:closeRange]]];
+        emit([source substringWithRange:closeRange], QLCCTokenDefault);
 
         cursor = m.range.location + m.range.length;
     }];
 
     if (cursor < source.length) {
         NSString *tail = [source substringFromIndex:cursor];
-        [segments addObjectsFromArray:
-            [self tokeniseSource:tail language:@"markdown" config:mdCfg]];
+        [self emitMasterRegexTokensForSource:tail language:@"markdown" config:mdCfg emit:emit];
     }
-
-    return segments;
 }
 
 /// Compile-and-cache an interpolation sub-pattern. Each interpolating
@@ -1539,14 +1532,15 @@ static dispatch_once_t gLanguageConfigsOnce;
 /// Falls back to a single String segment covering the whole text if
 /// nothing matches (the common case — most strings don't interpolate
 /// anything) or if the regex failed to compile.
-- (NSArray<QLCCSegment *> *)interpolatedSegmentsForString:(NSString *)text
-                                                    pattern:(NSString *)pattern {
+- (void)emitInterpolatedTokensForString:(NSString *)text
+                                 pattern:(NSString *)pattern
+                                    emit:(QLCCEmitBlock)emit {
     NSRegularExpression *regex = [self interpolationRegexForPattern:pattern];
     if (!regex) {
-        return @[ [QLCCHighlighter segmentWithText:text kind:QLCCTokenString] ];
+        emit(text, QLCCTokenString);
+        return;
     }
 
-    NSMutableArray<QLCCSegment *> *out = [NSMutableArray array];
     __block NSUInteger cursor = 0;
     const NSRange wholeRange = NSMakeRange(0, text.length);
 
@@ -1556,23 +1550,17 @@ static dispatch_once_t gLanguageConfigsOnce;
                          usingBlock:^(NSTextCheckingResult *m,
                                       NSMatchingFlags flags, BOOL *stop) {
         if (m.range.location > cursor) {
-            [out addObject:[QLCCHighlighter
-                segmentWithText:[text substringWithRange:
-                                     NSMakeRange(cursor, m.range.location - cursor)]
-                           kind:QLCCTokenString]];
+            emit([text substringWithRange:
+                      NSMakeRange(cursor, m.range.location - cursor)],
+                 QLCCTokenString);
         }
-        [out addObject:[QLCCHighlighter
-            segmentWithText:[text substringWithRange:m.range]
-                       kind:QLCCTokenVariable]];
+        emit([text substringWithRange:m.range], QLCCTokenVariable);
         cursor = m.range.location + m.range.length;
     }];
 
     if (cursor < text.length) {
-        [out addObject:[QLCCHighlighter
-            segmentWithText:[text substringFromIndex:cursor] kind:QLCCTokenString]];
+        emit([text substringFromIndex:cursor], QLCCTokenString);
     }
-
-    return out.count > 0 ? out : @[ [QLCCHighlighter segmentWithText:text kind:QLCCTokenString] ];
 }
 
 /// Class-level cache of compiled master and interpolation regexes. The
@@ -1794,7 +1782,7 @@ static char kKindOrderKey;
 /// silently read `nil` and fall back to `QLCCTokenDefault`.
 ///
 /// NSCache can evict entries under memory pressure — that is safe here: the
-/// caller (`tokeniseSource:`) holds a strong reference to the returned regex
+/// caller (the master-regex emitter) holds a strong reference to the returned regex
 /// for the whole pass, so both the regex and its attached `kinds` array stay
 /// alive until tokenisation finishes, even if the cache drops its own entry.
 /// A post-eviction re-lookup simply rebuilds and re-attaches.
@@ -1808,17 +1796,6 @@ static char kKindOrderKey;
         }
     }
     return QLCCTokenDefault;
-}
-
-+ (QLCCSegment *)defaultSegment:(NSString *)text {
-    return [self segmentWithText:text kind:QLCCTokenDefault];
-}
-
-+ (QLCCSegment *)segmentWithText:(NSString *)text kind:(QLCCTokenKind)kind {
-    QLCCSegment *seg = [QLCCSegment new];
-    seg.text = text;
-    seg.kind = kind;
-    return seg;
 }
 
 #pragma mark - Rendering
@@ -1916,17 +1893,20 @@ static char kKindOrderKey;
     return out;
 }
 
-- (NSString *)renderPlainPreWithSegments:(NSArray<QLCCSegment *> *)segments {
-    // Adjacent same-kind segments share one span (the line-number renderer
-    // has always coalesced like this; the plain renderer used to re-open a
-    // span per token) and colours come from the per-kind classes defined in
-    // wrapBody:'s stylesheet — a class attribute costs ~half the bytes of a
-    // style attribute, which measured ~30% of emitted HTML on large files.
+- (NSString *)renderPlainPreWithSource:(NSString *)source
+                              language:(NSString *)language
+                                config:(NSDictionary *)cfg {
+    // Adjacent same-kind tokens share one span, and colours come from the
+    // per-kind classes defined in wrapBody:'s stylesheet. Tokens stream in
+    // straight from the tokenizer (no segments array); the capacity hint
+    // avoids geometric regrowth of a several-MB body.
     NSMutableString *body =
-        [NSMutableString stringWithString:@"<pre class=\"code\">"];
-    NSString *openClass = nil;
-    for (QLCCSegment *seg in segments) {
-        NSString *cls = [self classForKind:seg.kind];
+        [NSMutableString stringWithCapacity:source.length + (source.length >> 3) + 32];
+    [body appendString:@"<pre class=\"code\">"];
+    __block NSString *openClass = nil;
+    [self emitTokensForSource:source language:language config:cfg
+                         emit:^(NSString *text, QLCCTokenKind kind) {
+        NSString *cls = [self classForKind:kind];
         if (cls) {
             if (![openClass isEqualToString:cls]) {
                 if (openClass) [body appendString:@"</span>"];
@@ -1937,16 +1917,19 @@ static char kKindOrderKey;
             [body appendString:@"</span>"];
             openClass = nil;
         }
-        [body appendString:[QLCCHighlighter htmlEscape:seg.text]];
-    }
+        [body appendString:[QLCCHighlighter htmlEscape:text]];
+    }];
     if (openClass) [body appendString:@"</span>"];
     [body appendString:@"</pre>"];
     return body;
 }
 
-- (NSString *)renderLineNumbersTableWithSegments:(NSArray<QLCCSegment *> *)segments {
+- (NSString *)renderLineNumbersTableWithSource:(NSString *)source
+                                      language:(NSString *)language
+                                        config:(NSDictionary *)cfg {
     NSMutableString *body =
-        [NSMutableString stringWithString:@"<table class=\"code\"><tbody>"];
+        [NSMutableString stringWithCapacity:source.length + (source.length >> 2) + 256];
+    [body appendString:@"<table class=\"code\"><tbody>"];
     __block NSUInteger lineNo = 1;
     __block NSString *openClass = nil;
 
@@ -1971,9 +1954,10 @@ static char kKindOrderKey;
     };
 
     startRow();
-    for (QLCCSegment *seg in segments) {
-        NSString *cls = [self classForKind:seg.kind];
-        NSString *escaped = [QLCCHighlighter htmlEscape:seg.text];
+    [self emitTokensForSource:source language:language config:cfg
+                         emit:^(NSString *text, QLCCTokenKind kind) {
+        NSString *cls = [self classForKind:kind];
+        NSString *escaped = [QLCCHighlighter htmlEscape:text];
         NSArray<NSString *> *parts = [escaped componentsSeparatedByString:@"\n"];
         for (NSUInteger i = 0; i < parts.count; i++) {
             if (i > 0) {
@@ -1991,7 +1975,7 @@ static char kKindOrderKey;
             }
             [body appendString:part];
         }
-    }
+    }];
     closeSpan();
     [body appendString:@"</td></tr></tbody></table>"];
     return body;

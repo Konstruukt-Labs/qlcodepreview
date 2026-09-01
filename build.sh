@@ -256,6 +256,28 @@ if ! "$TEST_EXE"; then
 fi
 echo "✓ Self-tests passed."
 
+# Render benchmark (see tests/qlcc_bench.m). Compiled on every build so it
+# can't rot, but only executed when QLCC_BENCH=1 is set — normal builds
+# shouldn't pay multi-hundred-ms timings.
+BENCH_OBJ="$OBJ_DIR/qlcc_bench.o"
+clang "${ARCH_FLAGS[@]}" "${COMMON_CFLAGS[@]}" -I "$EXT_SRC_DIR" \
+    -c "$ROOT/tests/qlcc_bench.m" -o "$BENCH_OBJ"
+BENCH_EXE="$OBJ_DIR/qlcc_bench"
+clang "${ARCH_FLAGS[@]}" \
+    -isysroot "$SDKROOT" \
+    -mmacosx-version-min="$MIN_MACOS" \
+    -fobjc-arc \
+    "$BENCH_OBJ" \
+    "${TEST_LIB_OBJ[@]}" \
+    -framework Cocoa \
+    -framework UniformTypeIdentifiers \
+    -framework QuickLookUI \
+    -o "$BENCH_EXE"
+if [[ "${QLCC_BENCH:-0}" == "1" ]]; then
+    echo "▶ Render benchmark:"
+    "$BENCH_EXE"
+fi
+
 echo "▶ Linking $HOST_APP_NAME (host app)…"
 APP_EXE="$APP_MACOS_DIR/$HOST_APP_NAME"
 clang "${ARCH_FLAGS[@]}" \
