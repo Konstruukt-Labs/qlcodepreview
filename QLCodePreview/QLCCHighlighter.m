@@ -2234,6 +2234,32 @@ static char kKeywordSetKey;
     return out;
 }
 
+static NSString *const kLNRowOpenA = @"<tr><td class=\"ln\">";
+static NSString *const kLNRowOpenB = @"</td><td class=\"lc\">";
+static NSString *const kLNRowClose = @"</td></tr>";
+
+/// Precomputed `<span class=x>` strings, one per token kind, built once
+/// from classForKind:. Both renderers use them instead of
+/// appendFormat:@"<span class=%@>", whose per-token format parse was a
+/// measurable share of render time (the same idea applies to the row
+/// scaffolding constants above — appendString of a constant beats
+/// reparsing a 36-char format per row).
+- (NSString *)cachedSpanOpenForKind:(QLCCTokenKind)kind {
+    static NSDictionary<NSNumber *, NSString *> *spanOpen;
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{
+        NSMutableDictionary *m = [NSMutableDictionary dictionaryWithCapacity:8];
+        for (NSInteger k = QLCCTokenComment; k <= QLCCTokenVariable; k++) {
+            NSString *cls = [self classForKind:(QLCCTokenKind)k];
+            if (cls) {
+                m[@(k)] = [NSString stringWithFormat:@"<span class=%@>", cls];
+            }
+        }
+        spanOpen = m;
+    });
+    return spanOpen[@((NSInteger)kind)];
+}
+
 - (NSString *)renderPlainPreWithSource:(NSString *)source
                               language:(NSString *)language
                                 config:(NSDictionary *)cfg {
@@ -2244,23 +2270,23 @@ static char kKeywordSetKey;
     NSMutableString *body =
         [NSMutableString stringWithCapacity:source.length + (source.length >> 3) + 32];
     [body appendString:@"<pre class=\"code\">"];
-    __block NSString *openClass = nil;
+    __block QLCCTokenKind openKind = QLCCTokenDefault;
     [self emitTokensForSource:source language:language config:cfg
                          emit:^(NSString *text, QLCCTokenKind kind) {
-        NSString *cls = [self classForKind:kind];
-        if (cls) {
-            if (![openClass isEqualToString:cls]) {
-                if (openClass) [body appendString:@"</span>"];
-                [body appendFormat:@"<span class=%@>", cls];
-                openClass = cls;
+        NSString *span = [self cachedSpanOpenForKind:kind];
+        if (span) {
+            if (openKind != kind) {
+                if (openKind != QLCCTokenDefault) [body appendString:@"</span>"];
+                [body appendString:span];
+                openKind = kind;
             }
-        } else if (openClass) {
+        } else if (openKind != QLCCTokenDefault) {
             [body appendString:@"</span>"];
-            openClass = nil;
+            openKind = QLCCTokenDefault;
         }
         [body appendString:[QLCCHighlighter htmlEscape:text]];
     }];
-    if (openClass) [body appendString:@"</span>"];
+    if (openKind != QLCCTokenDefault) [body appendString:@"</span>"];
     [body appendString:@"</pre>"];
     return body;
 }
@@ -2268,53 +2294,88 @@ static char kKeywordSetKey;
 - (NSString *)renderLineNumbersTableWithSource:(NSString *)source
                                       language:(NSString *)language
                                         config:(NSDictionary *)cfg {
+    // Same span state machine as the plain renderer, wrapped in per-line
+    // table rows. Two rules keep the bytes identical to the previous
+    // componentsSeparatedByString: implementation: an empty token (or an
+    // empty line piece) never touches the span state, and a newline
+    // closes the row (and any open span) before the next piece opens a
+    // fresh span in the new row.
     NSMutableString *body =
         [NSMutableString stringWithCapacity:source.length + (source.length >> 2) + 256];
     [body appendString:@"<table class=\"code\"><tbody>"];
     __block NSUInteger lineNo = 1;
-    __block NSString *openClass = nil;
+    __block QLCCTokenKind openKind = QLCCTokenDefault;
 
     void (^closeSpan)(void) = ^{
-        if (openClass) {
+        if (openKind != QLCCTokenDefault) {
             [body appendString:@"</span>"];
-            openClass = nil;
+            openKind = QLCCTokenDefault;
         }
     };
-    void (^openSpan)(NSString *) = ^(NSString *cls) {
-        if (!openClass || ![openClass isEqualToString:cls]) {
+    void (^openSpan)(NSString *span, QLCCTokenKind kind) = ^(NSString *span, QLCCTokenKind kind) {
+        if (openKind != kind) {
             closeSpan();
-            if (cls) {
-                [body appendFormat:@"<span class=%@>", cls];
-                openClass = cls;
-            }
+            [body appendString:span];
+            openKind = kind;
         }
     };
     void (^startRow)(void) = ^{
-        [body appendFormat:@"<tr><td class=\"ln\">%lu</td><td class=\"lc\">",
-                            (unsigned long)lineNo];
+        [body appendString:kLNRowOpenA];
+        [body appendFormat:@"%lu", (unsigned long)lineNo];
+        [body appendString:kLNRowOpenB];
     };
 
     startRow();
     [self emitTokensForSource:source language:language config:cfg
                          emit:^(NSString *text, QLCCTokenKind kind) {
-        NSString *cls = [self classForKind:kind];
         NSString *escaped = [QLCCHighlighter htmlEscape:text];
-        NSArray<NSString *> *parts = [escaped componentsSeparatedByString:@"\n"];
-        for (NSUInteger i = 0; i < parts.count; i++) {
-            if (i > 0) {
-                closeSpan();
-                [body appendString:@"</td></tr>"];
-                lineNo++;
-                startRow();
-            }
-            NSString *part = parts[i];
-            if (part.length == 0) continue;
-            if (cls) {
-                openSpan(cls);
+        const NSUInteger len = escaped.length;
+        if (len == 0) return;
+        NSString *span = [self cachedSpanOpenForKind:kind];
+
+        NSRange firstNL =
+            [escaped rangeOfString:@"\n" options:NSLiteralSearch];
+        if (firstNL.location == NSNotFound) {
+            // Single-line token (the overwhelming majority).
+            if (span) {
+                openSpan(span, kind);
             } else {
                 closeSpan();
             }
-            [body appendString:part];
+            [body appendString:escaped];
+            return;
+        }
+
+        // Multi-line token: walk the pieces between newlines, closing and
+        // reopening rows at each boundary. Mirrors the old per-part loop
+        // exactly (empty pieces skip the span logic).
+        NSUInteger start = 0;
+        BOOL first = YES;
+        for (;;) {
+            NSRange rest = NSMakeRange(start, len - start);
+            NSRange nl =
+                [escaped rangeOfString:@"\n" options:NSLiteralSearch range:rest];
+            const NSUInteger end =
+                nl.location == NSNotFound ? len : nl.location;
+            if (!first) {
+                closeSpan();
+                [body appendString:kLNRowClose];
+                lineNo++;
+                startRow();
+            }
+            first = NO;
+            const NSUInteger pieceLen = end - start;
+            if (pieceLen > 0) {
+                if (span) {
+                    openSpan(span, kind);
+                } else {
+                    closeSpan();
+                }
+                [body appendString:[escaped substringWithRange:
+                                        NSMakeRange(start, pieceLen)]];
+            }
+            if (nl.location == NSNotFound) break;
+            start = end + 1;
         }
     }];
     closeSpan();
