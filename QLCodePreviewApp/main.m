@@ -90,8 +90,16 @@
     self.statusLabel = [NSTextField labelWithString:@""];
     self.statusLabel.font = [NSFont systemFontOfSize:11];
     self.statusLabel.textColor = [NSColor secondaryLabelColor];
-    self.statusLabel.frame = NSMakeRect(20, 24, 300, 18);
+    self.statusLabel.frame = NSMakeRect(20, 24, 130, 18);
     [content addSubview:self.statusLabel];
+
+    // Footer links sit in the status row, right-aligned against Save/Quit,
+    // so the bottom bar reads as one footer: status left, links + buttons
+    // right. (The status text is always short — "Saved · Saved." — so a
+    // 130pt label leaves the row plenty of room.)
+    [self addFooterLinks:@[ @"konstruukt.com", @"Buy me a coffee" ]
+                     URLs:@[ @"https://konstruukt.com",
+                             @"https://buymeacoffee.com/itsvrk" ]];
 
     NSButton *quit = [NSButton buttonWithTitle:@"Quit"
                                          target:NSApp
@@ -110,6 +118,50 @@
     [self.window center];
     [self.window makeKeyAndOrderFront:nil];
     [NSApp activateIgnoringOtherApps:YES];
+}
+
+// Lays out a row of link buttons in the bottom bar, right-aligned so the
+// row ends flush against the Save button (which starts at x = 338). Button
+// widths come from the rendered attributed text, so the row hugs the buttons
+// exactly instead of relying on guessed frame widths.
+- (void)addFooterLinks:(NSArray<NSString *> *)titles URLs:(NSArray<NSString *> *)urls {
+    NSDictionary<NSAttributedStringKey, id> *attributes = @{
+        NSFontAttributeName : [NSFont systemFontOfSize:11],
+        NSForegroundColorAttributeName : NSColor.linkColor,
+        NSUnderlineStyleAttributeName : @(NSUnderlineStyleSingle),
+    };
+    const CGFloat gap = 14.0;       // breathing room between the two links
+    const CGFloat rightEdge = 328.0; // Save starts at x = 338
+
+    NSMutableArray<NSNumber *> *widths = [NSMutableArray array];
+    CGFloat total = (titles.count - 1) * gap;
+    for (NSString *title in titles) {
+        CGFloat w = ceil([title sizeWithAttributes:attributes].width);
+        [widths addObject:@(w)];
+        total += w;
+    }
+
+    CGFloat x = rightEdge - total;
+    for (NSUInteger i = 0; i < titles.count; i++) {
+        CGFloat w = widths[i].doubleValue;
+        NSButton *button = [NSButton buttonWithTitle:titles[i]
+                                              target:self
+                                              action:@selector(openLink:)];
+        button.frame = NSMakeRect(x, 24, w, 18);
+        [button setBordered:NO];
+        button.focusRingType = NSFocusRingTypeNone;
+        button.identifier = urls[i];
+        button.toolTip = urls[i];
+        button.attributedTitle = [[NSAttributedString alloc] initWithString:titles[i]
+                                                                 attributes:attributes];
+        [self.window.contentView addSubview:button];
+        x += w + gap;
+    }
+}
+
+- (void)openLink:(NSButton *)sender {
+    NSURL *url = [NSURL URLWithString:sender.identifier];
+    if (url) [[NSWorkspace sharedWorkspace] openURL:url];
 }
 
 - (void)saveClicked:(id)sender {

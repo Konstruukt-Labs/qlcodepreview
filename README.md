@@ -170,6 +170,11 @@ interactivity available to previews.
   should start with `+` (enabled).
 - **Reset Quick Look:** `qlmanage -r`.
 
+## Links
+
+- **Website:** <https://konstruukt.com>
+- **Support development:** [Buy me a coffee](https://buymeacoffee.com/itsvrk)
+
 ## Development
 
 This repo keeps a local [graphify](https://pypi.org/project/graphifyy/) knowledge
