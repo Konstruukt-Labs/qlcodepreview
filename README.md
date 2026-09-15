@@ -7,6 +7,20 @@ Quick Look (Space bar).
 The highlighter is self-contained and dependency-free; it runs entirely inside
 the sandboxed Quick Look extension (no shelling out to external tools).
 
+## Donationware & license
+
+QLCodePreview is donationware: free to use, and if you find it useful,
+[Buy me a coffee](https://buymeacoffee.com/itsvrk). Official binaries are the
+signed, notarized builds on the
+[Releases page](https://github.com/Konstruukt-Labs/qlcodepreview/releases) —
+anything else is unsupported.
+
+The source is available under the [PolyForm Noncommercial License
+1.0.0](./LICENSE): read it, build it, and change it for any noncommercial
+purpose. Commercial use isn't licensed — ask via
+[konstruukt.com](https://konstruukt.com) first — and redistribution must keep
+the license and its notices.
+
 ## Requirements
 
 - **macOS 12.0+** (uses the modern `QLPreviewProvider` / `QLPreviewReply`
