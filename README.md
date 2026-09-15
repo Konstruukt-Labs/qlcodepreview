@@ -90,7 +90,7 @@ pane (e.g. `myext → php`).
 | | TypeScript | `.ts` †, `.tsx` |
 | | PHP | `.php`, `.install`, `.module`, `.engine` |
 | | CSS / preprocessors | `.css`, `.scss`, `.sass`, `.less`, `.styl` |
-| | HTML | `.html` ‡, `.htm` ‡, `.xhtml` ‡, `.vue`, `.svelte` |
+| | HTML | `.vue`, `.svelte` (see [.html/.htm/.xhtml](#known-limitations-macos)) |
 | | XML | `.xml`, `.xsl`, `.xslt`, `.xsd`, `.rss`, `.svg`, `.resx`, `.csproj`, `.plist`, `.iml`, `.fxml`, `.rdf` |
 | **Scripting** | Python | `.py`, `.pyw`, `.pyi` |
 | | Ruby | `.rb`, `.rbw`, `.gemspec` |
@@ -125,8 +125,8 @@ pane (e.g. `myext → php`).
 > (`public.mpeg-2-transport-stream`) and is **not** previewable as code.
 > `.tsx` works normally — see [Known limitations](#known-limitations-macos).
 >
-> ‡ `.html` / `.htm` / `.xhtml` are rendered by macOS's built-in HTML
-> previewer, not shown as colourised source — see
+> `.html` / `.htm` / `.xhtml` are likewise not previewable as source —
+> macOS renders them with its built-in HTML previewer. See
 > [Known limitations](#known-limitations-macos).
 
 Unknown extensions fall back to plain-text highlighting.
