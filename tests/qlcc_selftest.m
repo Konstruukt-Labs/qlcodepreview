@@ -135,6 +135,26 @@ int main(int argc, char *argv[]) {
         };
         runCase(yamlCase, h);
 
+        // JSON object keys are quoted strings, so without the json
+        // keyPattern they'd claim the string class exactly like values.
+        // The inline (single-line) object also proves the pattern needs
+        // no ^ line-start anchor — minified JSON gets key colours too.
+        {
+            NSString *jsonKey = span(kKeyword, @"\"name\"");
+            NSString *jsonVal = span(kString, @"\"production\"");
+            const char *jsonMust[] = {
+                jsonKey.UTF8String, jsonVal.UTF8String,
+                numSpan_42.UTF8String, NULL,
+            };
+            QLCCSelfTestCase jsonCase = {
+                .name = "json: key vs value colours (inline object)",
+                .ext = "json",
+                .source = "{\"name\": \"production\", \"count\": 42}\n",
+                .mustContain = jsonMust,
+            };
+            runCase(jsonCase, h);
+        }
+
         // P5a: multi-line block comments must highlight in CRLF files too.
         // ICU's '.' excludes every line terminator (\r included), so the
         // old (?:.|\n) comment bodies could never cross a CRLF — the whole

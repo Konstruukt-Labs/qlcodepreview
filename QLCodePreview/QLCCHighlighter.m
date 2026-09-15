@@ -977,7 +977,17 @@ static dispatch_once_t gLanguageConfigsOnce;
 
             @"json" : @{
                 // JSON has no comments; highlight strings + numbers + the
-                // structural punctuation implicitly through them.
+                // structural punctuation implicitly through them. Object
+                // keys are quoted strings too, so without a key rule they
+                // render in the SAME colour as string values. A key is a
+                // double-quoted string whose next non-blank character is
+                // ':' — a value in valid JSON is only ever followed by
+                // ',', '}' or ']' — so the lookahead disambiguates without
+                // a ^ anchor, colouring keys in inline/minified objects
+                // too. Sits ahead of the plain string piece (which keeps
+                // claiming values); reuses the keyword colour slot like
+                // the yaml/toml/ini key patterns do.
+                @"keyPattern" : @"\"(?:\\\\.|[^\"\\\\\\n])*\"(?=[ \t]*:)",
                 @"strings" : @[ kPatDoubleString ],
             },
 
