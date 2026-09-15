@@ -64,7 +64,9 @@ HOST_APP_NAME="QLCodePreview"
 EXT_NAME="QLCodePreviewExtension"
 HOST_BUNDLE_ID="${BUNDLE_ID:-com.konstruuktlabs.QLCodePreview}"
 EXT_BUNDLE_ID="${EXTENSION_BUNDLE_ID:-${HOST_BUNDLE_ID}.PreviewExtension}"
-MARKETING_VERSION="${MARKETING_VERSION:-1.0.0}"
+# CalVer YYYY.MM.DD (UTC). Local builds default to today's date; the
+# release pipeline passes the release date explicitly.
+MARKETING_VERSION="${MARKETING_VERSION:-$(date -u +%Y.%m.%d)}"
 # A timestamp, not a fixed "1": LaunchServices appears to key its "have I
 # already scanned this bundle" cache partly off CFBundleVersion, so a build
 # that changes Info.plist (e.g. adds a UTI declaration) without also bumping

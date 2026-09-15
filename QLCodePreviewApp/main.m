@@ -65,6 +65,13 @@
                                                  backing:NSBackingStoreBuffered
                                                    defer:NO];
     self.window.title = @"QLCodePreview";
+    // CalVer (YYYY.MM.DD) stamped into Info.plist by build.sh at compile
+    // time. Shown as the window subtitle: the app has no About panel, and
+    // this keeps the version visible without adding one.
+    NSString *appVersion = NSBundle.mainBundle.infoDictionary[@"CFBundleShortVersionString"];
+    if (appVersion.length > 0) {
+        self.window.subtitle = appVersion;
+    }
     self.window.releasedWhenClosed = NO;
     NSView *content = self.window.contentView;
 

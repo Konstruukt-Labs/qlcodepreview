@@ -191,6 +191,12 @@ interactivity available to previews.
 
 ## Development
 
+Branches: day-to-day work lands on `dev`; `main` is release-only,
+advanced by merging `dev` when a stable version ships. Beta releases
+(`-beta.N` version suffix) build from `dev` and publish as GitHub
+prereleases; stable releases build from `main` and are what the Homebrew
+cask tracks.
+
 This repo keeps a local [graphify](https://pypi.org/project/graphifyy/) knowledge
 graph in `graphify-out/` (gitignored, disposable). A post-commit hook rebuilds
 it after every commit; query it with `graphify query "…"`, or rebuild manually
