@@ -41,13 +41,17 @@
 #    EXTENSION_BUNDLE_ID=...       # override the extension's bundle identifier
 #                                  # (default: $BUNDLE_ID.PreviewExtension)
 #    APPLICATIONS_DIR=...          # install destination (default: ~/Applications)
+#    SIGN_IDENTITY=...             # codesign --sign with this identity (the
+#                                  # release pipeline passes a Developer ID
+#                                  # Application identity); unset → ad-hoc
 #
 #  The resulting bundles replicate what Xcode produces for an
 #  com.apple.product-type.app-extension embedded in a
 #  com.apple.product-type.application: PIE Mach-O executables (the extension's
-#  entry point is Foundation's _NSExtensionMain), packaged and ad-hoc signed
-#  for local use — extension first, then the outer app, matching Xcode's
-#  sign-inner-before-outer order.
+#  entry point is Foundation's _NSExtensionMain), packaged and signed —
+#  ad-hoc for local use, or Developer ID (hardened runtime + secure
+#  timestamp) when SIGN_IDENTITY is set — extension first, then the outer
+#  app, matching Xcode's sign-inner-before-outer order.
 # =============================================================================
 setopt err_exit no_unset
 
@@ -73,6 +77,24 @@ MARKETING_VERSION="${MARKETING_VERSION:-$(date -u +%Y.%m.%d)}"
 # this can get silently skipped on re-registration. Always changing it
 # forces LaunchServices to treat every install as new.
 CURRENT_PROJECT_VERSION="${CURRENT_PROJECT_VERSION:-$(date +%Y%m%d%H%M%S)}"
+
+# Signing identity (see docs/CODE_SIGNING_CI.md). Unset → ad-hoc (--sign -),
+# which is what a local ./build.sh without a certificate wants. Set — the
+# release pipeline passes a "Developer ID Application" identity — → sign
+# with it and add the secure timestamp notarization requires (ad-hoc
+# signatures can't carry one). Hardened runtime (--options runtime) is on
+# in both paths: PlugInKit requires it of the extension, notarytool of
+# everything.
+SIGN_IDENTITY="${SIGN_IDENTITY:-}"
+if [[ -n "$SIGN_IDENTITY" ]]; then
+    SIGN_ARGS=(--sign "$SIGN_IDENTITY")
+    SIGN_TIMESTAMP=(--timestamp)
+    SIGN_DESC="Developer ID"
+else
+    SIGN_ARGS=(--sign -)
+    SIGN_TIMESTAMP=(--timestamp=none)
+    SIGN_DESC="ad-hoc"
+fi
 
 SDKROOT="$(xcrun --sdk macosx --show-sdk-path)"
 MIN_MACOS="12.0"   # QLPreviewProvider / QLPreviewReply require macOS 12.0+
@@ -179,13 +201,13 @@ plutil -lint "$EXT_PLIST"
 # -> 6.9 K for the host). CFBundle reads both forms; Xcode ships binary.
 plutil -convert binary1 "$EXT_PLIST"
 
-echo "▶ Code signing extension (ad-hoc, sandboxed, hardened runtime)…"
+echo "▶ Code signing extension ($SIGN_DESC, sandboxed, hardened runtime)…"
 ENT_PATH="$EXT_SRC_DIR/QLCodePreviewExtension.entitlements"
-codesign --force --sign - \
+codesign --force "${SIGN_ARGS[@]}" \
     --identifier "$EXT_BUNDLE_ID" \
     --entitlements "$ENT_PATH" \
     --options runtime \
-    --timestamp=none \
+    "${SIGN_TIMESTAMP[@]}" \
     "$EXT_BUNDLE"
 
 # -----------------------------------------------------------------------------
@@ -350,11 +372,13 @@ else
     echo "⚠ actool emitted no AppIcon.icns — pre-26 releases would show a generic icon" >&2
 fi
 
-echo "▶ Code signing $HOST_APP_NAME.app (ad-hoc, sealing embedded extension)…"
+echo "▶ Code signing $HOST_APP_NAME.app ($SIGN_DESC, hardened runtime, sealing embedded extension)…"
 HOST_ENT_PATH="$APP_SRC_DIR/QLCodePreview.entitlements"
-codesign --force --sign - \
+codesign --force "${SIGN_ARGS[@]}" \
     --identifier "$HOST_BUNDLE_ID" \
     --entitlements "$HOST_ENT_PATH" \
+    --options runtime \
+    "${SIGN_TIMESTAMP[@]}" \
     "$APP_BUNDLE"
 
 # -----------------------------------------------------------------------------
