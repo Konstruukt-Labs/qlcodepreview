@@ -39,8 +39,11 @@ PlugInKit / Quick Look.
 
 Then enable it once (macOS won't let a script do this part):
 
-> **System Settings → General → Login Items & Extensions → Quick Look →
+> Run the app once first (the toggle only appears after the app has been
+> run), then enable it under
+> **System Settings → General → Login Items & Extensions → Extensions →
 > QLCodePreview Extension = ON**
+> (macOS won't let a script flip the toggle).
 
 Space-bar any source file in Finder to get a colourised preview. Rebuild after
 code changes with `zsh build.sh`; re-run `install` to deploy.
