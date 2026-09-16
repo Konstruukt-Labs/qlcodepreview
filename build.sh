@@ -358,6 +358,12 @@ fi
 cp "$ICON_COMPILED_DIR/Assets.car" "$APP_RESOURCES_DIR/Assets.car"
 cp "$ICON_COMPILED_DIR/AppIcon.icns" "$APP_RESOURCES_DIR/AppIcon.icns"
 
+# Ship the license inside the bundle so the distributed .app carries the MIT
+# notice without a trip to the repo — MIT's notice condition binds
+# redistributors, and this makes the release zip self-contained for them.
+echo "▶ Bundling license…"
+cp "$ROOT/LICENSE" "$APP_RESOURCES_DIR/LICENSE.txt"
+
 
 echo "▶ Code signing $HOST_APP_NAME.app ($SIGN_DESC, hardened runtime, sealing embedded extension)…"
 HOST_ENT_PATH="$APP_SRC_DIR/QLCodePreview.entitlements"
