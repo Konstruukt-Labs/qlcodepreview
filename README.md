@@ -10,7 +10,8 @@ the sandboxed Quick Look extension (no shelling out to external tools).
 ## Donationware & license
 
 QLCodePreview is donationware: free to use, and if you find it useful,
-[Buy me a coffee](https://buymeacoffee.com/itsvrk). Official binaries are the
+[sponsor on GitHub](https://github.com/sponsors/BrianGilbert) or
+[buy a coffee](https://buymeacoffee.com/itsvrk). Official binaries are the
 signed, notarized builds on the
 [Releases page](https://github.com/Konstruukt-Labs/qlcodepreview/releases) —
 anything else is unsupported.
@@ -188,7 +189,7 @@ interactivity available to previews.
 ## Links
 
 - **Website:** <https://konstruukt.com>
-- **Support development:** [Buy me a coffee](https://buymeacoffee.com/itsvrk)
+- **Support development:** [GitHub Sponsors](https://github.com/sponsors/BrianGilbert) · [Buy me a coffee](https://buymeacoffee.com/itsvrk)
 
 ## Development
 
